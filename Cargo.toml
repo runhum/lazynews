@@ -2,9 +2,12 @@
 name = "lazynews"
 version = "0.1.0"
 edition = "2024"
-description = "A terminal hacker news reader"
+description = "A hacker news reader for the terminal"
 authors = ["Runar Hummelsund <runhum@users.noreply.github.com>"]
 license = "MIT"
+repository = "https://github.com/runhum/lazynews"
+homepage = "https://github.com/runhum/lazynews"
+
 
 [dependencies]
 color-eyre = "0.6.5"
@@ -22,3 +25,8 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
