@@ -1,6 +1,24 @@
 [package]
-name = "lazyhackernews"
+name = "lazynews"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal hacker news reader"
+authors = ["Runar Hummelsund <runhum@users.noreply.github.com>"]
+license = "MIT"
 
 [dependencies]
+color-eyre = "0.6.5"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures = "0.3.32"
+ratatui = "0.30.0"
+reqwest = { version = "0.13.2", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-util = "0.7.18"
+webbrowser = "1.0.6"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
