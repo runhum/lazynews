@@ -200,7 +200,7 @@ impl App {
     ) {
         let comments_title = self
             .selected_post()
-            .map(|post| format!("{} | {}", post.title, post.comments))
+            .map(|post| format!("{} | {} comments", post.title, post.comments))
             .unwrap_or_else(|| "Comments".to_string());
 
         let content_width = area.width.saturating_sub(2) as usize;
@@ -242,9 +242,12 @@ impl App {
                 KeyCode::Char('q') => self.events.send(AppEvent::Quit),
                 KeyCode::Esc => self.close_comments_view(),
                 KeyCode::Char('o') => self.open_selected_post(),
-                KeyCode::Char('n') | KeyCode::Char('N') => self.jump_to_next_sibling_comment(),
-                KeyCode::Up => self.scroll_comments_up(1),
-                KeyCode::Down => self.scroll_comments_down(1),
+                KeyCode::Up => self.jump_to_previous_comment(),
+                KeyCode::Down => self.jump_to_next_comment(),
+                KeyCode::Left => self.jump_to_previous_sibling_comment(),
+                KeyCode::Right => self.jump_to_next_sibling_comment(),
+                KeyCode::Char('k') | KeyCode::Char('K') => self.scroll_comments_up(1),
+                KeyCode::Char('j') | KeyCode::Char('J') => self.scroll_comments_down(1),
                 KeyCode::Home => self.comments_scroll = 0,
                 KeyCode::End => self.comments_scroll = self.max_comment_scroll(),
                 _ => {}
@@ -497,15 +500,70 @@ impl App {
 
         for next_index in (current_index + 1)..self.comments.len() {
             let depth = self.comments[next_index].depth;
+            if depth == current_depth {
+                self.jump_to_comment(next_index);
+                return;
+            }
+            if depth < current_depth {
+                self.jump_to_comment(next_index);
+                return;
+            }
+        }
+    }
+
+    fn jump_to_previous_sibling_comment(&mut self) {
+        let Some(current_index) = self.current_comment_index_from_scroll() else {
+            return;
+        };
+
+        let current_depth = self.comments[current_index].depth;
+
+        for prev_index in (0..current_index).rev() {
+            let depth = self.comments[prev_index].depth;
             if depth < current_depth {
                 break;
             }
 
             if depth == current_depth {
-                self.jump_to_comment(next_index);
+                self.jump_to_comment(prev_index);
                 return;
             }
         }
+
+        if let Some(parent_index) = self.nearest_parent_comment_index(current_index) {
+            self.jump_to_comment(parent_index);
+        }
+    }
+
+    fn jump_to_next_comment(&mut self) {
+        let Some(current_index) = self.current_comment_index_from_scroll() else {
+            return;
+        };
+
+        if current_index + 1 < self.comments.len() {
+            self.jump_to_comment(current_index + 1);
+        }
+    }
+
+    fn jump_to_previous_comment(&mut self) {
+        let Some(current_index) = self.current_comment_index_from_scroll() else {
+            return;
+        };
+
+        if current_index > 0 {
+            self.jump_to_comment(current_index - 1);
+        }
+    }
+
+    fn nearest_parent_comment_index(&self, current_index: usize) -> Option<usize> {
+        let current_depth = self.comments.get(current_index)?.depth;
+        if current_depth == 0 {
+            return None;
+        }
+
+        (0..current_index)
+            .rev()
+            .find(|&index| self.comments[index].depth < current_depth)
     }
 
     fn current_comment_index_from_scroll(&self) -> Option<usize> {

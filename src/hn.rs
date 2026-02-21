@@ -162,8 +162,6 @@ impl HackerNewsApi {
 
             fetched.sort_by_key(|(order, _, _)| *order);
 
-            // Push children in reverse parent order so the next stack pop follows DFS
-            // from the leftmost visible branch (faster first paint in UI).
             for (_, id, maybe_item) in fetched.into_iter().rev() {
                 match maybe_item {
                     Some(item) => {

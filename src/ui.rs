@@ -22,10 +22,12 @@ pub fn instructions_line(comments_open: bool, loading: bool, spinner: &str) -> L
 
     if comments_open {
         spans.extend([
-            "Scroll ".into(),
+            "Comment ".into(),
             key("<Up/Down>"),
-            " Next sibling ".into(),
-            key("<N>"),
+            " Sibling ".into(),
+            key("<Left/Right>"),
+            " Scroll ".into(),
+            key("<J/K>"),
             " Open ".into(),
             key("<O>"),
             " Close ".into(),
