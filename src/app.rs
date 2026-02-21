@@ -49,6 +49,7 @@ impl App {
     }
 
     pub async fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        self.events.send(AppEvent::Refresh);
         while self.running {
             terminal.draw(|frame| self.draw(frame))?;
             match self.events.next().await? {
