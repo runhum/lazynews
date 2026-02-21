@@ -6,4 +6,6 @@ A hacker news reader for the terminal
 TODO
 
 ## Install
-TODO
+
+### Homebrew
+`brew install runhum/tap/lazynews`
