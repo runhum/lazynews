@@ -285,3 +285,106 @@ fn wrap_text(input: &str, width: usize) -> Vec<String> {
         wrapped
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn as_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    fn sample_comment(
+        author: &str,
+        text: &str,
+        depth: usize,
+        ancestor_has_next_sibling: Vec<bool>,
+        is_last_sibling: bool,
+    ) -> Comment {
+        Comment {
+            author: author.to_string(),
+            text: text.to_string(),
+            published_at: 1,
+            depth,
+            ancestor_has_next_sibling,
+            is_last_sibling,
+        }
+    }
+
+    #[test]
+    fn wrap_text_wraps_by_word_when_it_fits() {
+        let wrapped = wrap_text("alpha beta gamma", 10);
+        assert_eq!(wrapped, vec!["alpha beta", "gamma"]);
+    }
+
+    #[test]
+    fn wrap_text_splits_long_words_into_chunks() {
+        let wrapped = wrap_text("abcdefgh ij", 4);
+        assert_eq!(wrapped, vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_text_returns_blank_for_zero_width() {
+        let wrapped = wrap_text("alpha beta", 0);
+        assert_eq!(wrapped, vec![String::new()]);
+    }
+
+    #[test]
+    fn comment_lines_returns_placeholder_states() {
+        let (lines, starts) = comment_lines("|", 40, None, false, None, None, &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            as_text(&lines[0]),
+            "Press Enter on a post to load comments."
+        );
+        assert!(starts.is_empty());
+
+        let (lines, starts) = comment_lines("|", 40, Some(1), true, None, None, &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(as_text(&lines[0]), "Loading comments |");
+        assert!(starts.is_empty());
+
+        let (lines, starts) =
+            comment_lines("|", 40, Some(1), false, Some("no comments"), None, &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(as_text(&lines[0]), "no comments");
+        assert!(starts.is_empty());
+
+        let (lines, starts) = comment_lines("|", 40, Some(1), false, None, Some("boom"), &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(as_text(&lines[0]), "Failed to load comments: boom");
+        assert!(starts.is_empty());
+
+        let (lines, starts) = comment_lines("|", 40, Some(1), false, None, None, &[]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(as_text(&lines[0]), "No comments found.");
+        assert!(starts.is_empty());
+    }
+
+    #[test]
+    fn comment_lines_tracks_comment_start_lines_and_tree_prefixes() {
+        let comments = vec![
+            sample_comment("alice", "hello world", 0, vec![], false),
+            sample_comment("bob", "> quoted\nreply", 1, vec![true], true),
+        ];
+
+        let (lines, starts) = comment_lines("|", 24, Some(42), false, None, None, &comments);
+        let rendered: Vec<String> = lines.iter().map(as_text).collect();
+
+        assert_eq!(starts, vec![0, 2]);
+        assert_eq!(rendered.len(), 5);
+        assert!(rendered[0].contains("alice"));
+        assert!(rendered[2].contains("bob"));
+        assert!(rendered[2].contains("└─ "));
+        assert!(rendered[3].contains("> quoted"));
+        assert!(rendered[4].contains("reply"));
+    }
+
+    #[test]
+    fn format_age_returns_dash_for_zero_timestamp() {
+        assert_eq!(format_age(0), "-");
+    }
+}

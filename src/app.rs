@@ -739,3 +739,81 @@ impl App {
         self.comments_scroll = (*line).min(self.max_comment_scroll());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_item(id: u64) -> Item {
+        Item {
+            id,
+            title: None,
+            url: None,
+            score: None,
+            descendants: None,
+            by: None,
+            time: None,
+            text: None,
+            kids: None,
+            kind: None,
+            dead: false,
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn posts_from_items_filters_invalid_and_maps_defaults() {
+        let mut story = base_item(1);
+        story.title = Some("Story title".to_string());
+        story.url = Some("https://example.com/story".to_string());
+        story.kind = Some("story".to_string());
+        story.score = Some(123);
+        story.descendants = Some(45);
+        story.by = Some("alice".to_string());
+        story.time = Some(1_700_000_000);
+
+        let mut job = base_item(2);
+        job.title = Some("Job title".to_string());
+        job.url = Some("https://example.com/job".to_string());
+        job.kind = Some("job".to_string());
+        job.by = Some(String::new());
+
+        let mut comment_kind = base_item(3);
+        comment_kind.title = Some("Comment-like post".to_string());
+        comment_kind.url = Some("https://example.com/comment".to_string());
+        comment_kind.kind = Some("comment".to_string());
+
+        let mut dead_story = base_item(4);
+        dead_story.title = Some("Dead".to_string());
+        dead_story.url = Some("https://example.com/dead".to_string());
+        dead_story.kind = Some("story".to_string());
+        dead_story.dead = true;
+
+        let mut missing_title = base_item(5);
+        missing_title.url = Some("https://example.com/missing-title".to_string());
+        missing_title.kind = Some("story".to_string());
+
+        let posts =
+            App::posts_from_items(vec![story, job, comment_kind, dead_story, missing_title]);
+
+        assert_eq!(posts.len(), 2);
+
+        assert_eq!(posts[0].id, 1);
+        assert_eq!(posts[0].title, "Story title");
+        assert_eq!(posts[0].url, "https://example.com/story");
+        assert!(matches!(posts[0].post_type, PostType::Story));
+        assert_eq!(posts[0].points, 123);
+        assert_eq!(posts[0].comments, 45);
+        assert_eq!(posts[0].author, "alice");
+        assert_eq!(posts[0].published_at, 1_700_000_000);
+
+        assert_eq!(posts[1].id, 2);
+        assert_eq!(posts[1].title, "Job title");
+        assert_eq!(posts[1].url, "https://example.com/job");
+        assert!(matches!(posts[1].post_type, PostType::Job));
+        assert_eq!(posts[1].points, 0);
+        assert_eq!(posts[1].comments, 0);
+        assert_eq!(posts[1].author, "unknown");
+        assert_eq!(posts[1].published_at, 0);
+    }
+}

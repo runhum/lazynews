@@ -327,3 +327,143 @@ fn decode_html_entities(text: &str) -> String {
         .replace("&lt;", "<")
         .replace("&gt;", ">")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn base_item(id: u64) -> Item {
+        Item {
+            id,
+            title: None,
+            url: None,
+            score: None,
+            descendants: None,
+            by: None,
+            time: None,
+            text: None,
+            kids: None,
+            kind: None,
+            dead: false,
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn clean_comment_text_normalizes_html_and_entities() {
+        let cleaned = clean_comment_text(
+            "<p>Hello &amp; <em>world</em></p><p>Line 2</p><br />&quot;quote&quot;",
+        );
+
+        assert_eq!(cleaned, "Hello & world\nLine 2\n\"quote\"");
+    }
+
+    #[test]
+    fn clean_comment_text_collapses_extra_blank_lines() {
+        let cleaned = clean_comment_text("<p>One</p><p></p><p></p><p>Two</p>");
+
+        assert_eq!(cleaned, "One\n\nTwo");
+    }
+
+    #[test]
+    fn build_comments_from_cache_waits_for_missing_items() {
+        let root_kids = vec![1];
+        let mut items_by_id = HashMap::new();
+        let mut root = base_item(1);
+        root.kind = Some("comment".to_string());
+        root.text = Some("Root".to_string());
+        root.kids = Some(vec![2]);
+        items_by_id.insert(1, root);
+
+        let comments = build_comments_from_cache(&root_kids, 10, &items_by_id, &HashSet::new());
+
+        assert!(comments.is_none());
+    }
+
+    #[test]
+    fn build_comments_from_cache_skips_failed_and_filters_unsupported_items() {
+        let root_kids = vec![10, 20, 30];
+        let mut items_by_id = HashMap::new();
+        let mut failed_ids = HashSet::new();
+        failed_ids.insert(30);
+
+        let mut root = base_item(10);
+        root.kind = Some("comment".to_string());
+        root.by = Some("alice".to_string());
+        root.time = Some(100);
+        root.text = Some("<p>First<br>line</p>".to_string());
+        root.kids = Some(vec![11, 12]);
+        items_by_id.insert(10, root);
+
+        let mut dead_child = base_item(11);
+        dead_child.kind = Some("comment".to_string());
+        dead_child.dead = true;
+        dead_child.text = Some("should not render".to_string());
+        items_by_id.insert(11, dead_child);
+
+        let mut rendered_child = base_item(12);
+        rendered_child.kind = Some("comment".to_string());
+        rendered_child.by = Some(String::new());
+        rendered_child.time = Some(120);
+        rendered_child.text = Some("Parent two".to_string());
+        rendered_child.kids = Some(vec![13]);
+        items_by_id.insert(12, rendered_child);
+
+        let mut grandchild = base_item(13);
+        grandchild.kind = Some("comment".to_string());
+        grandchild.by = Some("carol".to_string());
+        grandchild.time = Some(140);
+        grandchild.text = Some("&lt;tag&gt; and &#x27;quotes&#x27;".to_string());
+        items_by_id.insert(13, grandchild);
+
+        let mut non_comment_root = base_item(20);
+        non_comment_root.kind = Some("story".to_string());
+        non_comment_root.text = Some("not a comment".to_string());
+        items_by_id.insert(20, non_comment_root);
+
+        let comments =
+            build_comments_from_cache(&root_kids, 10, &items_by_id, &failed_ids).unwrap();
+
+        assert_eq!(comments.len(), 3);
+        assert_eq!(comments[0].author, "alice");
+        assert_eq!(comments[0].text, "First\nline");
+        assert_eq!(comments[0].depth, 0);
+        assert!(comments[0].ancestor_has_next_sibling.is_empty());
+        assert!(!comments[0].is_last_sibling);
+
+        assert_eq!(comments[1].author, "unknown");
+        assert_eq!(comments[1].text, "Parent two");
+        assert_eq!(comments[1].depth, 1);
+        assert_eq!(comments[1].ancestor_has_next_sibling, vec![true]);
+        assert!(comments[1].is_last_sibling);
+
+        assert_eq!(comments[2].author, "carol");
+        assert_eq!(comments[2].text, "<tag> and 'quotes'");
+        assert_eq!(comments[2].depth, 2);
+        assert_eq!(comments[2].ancestor_has_next_sibling, vec![true, false]);
+        assert!(comments[2].is_last_sibling);
+    }
+
+    #[test]
+    fn build_comments_from_cache_respects_limit() {
+        let root_kids = vec![1, 2];
+        let mut items_by_id = HashMap::new();
+
+        let mut first = base_item(1);
+        first.kind = Some("comment".to_string());
+        first.text = Some("first".to_string());
+        items_by_id.insert(1, first);
+
+        let mut second = base_item(2);
+        second.kind = Some("comment".to_string());
+        second.text = Some("second".to_string());
+        items_by_id.insert(2, second);
+
+        let comments =
+            build_comments_from_cache(&root_kids, 1, &items_by_id, &HashSet::new()).unwrap();
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "first");
+    }
+}
