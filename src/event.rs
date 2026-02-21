@@ -16,7 +16,7 @@ pub enum PostsFetchMode {
 #[derive(Debug)]
 pub struct PostsFetchResult {
     pub mode: PostsFetchMode,
-    pub top_story_ids: Option<Vec<u64>>,
+    pub story_ids: Option<Vec<u64>>,
     pub items: Vec<Item>,
     pub next_story_index: usize,
 }

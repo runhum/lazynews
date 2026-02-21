@@ -46,6 +46,11 @@ pub fn instructions_line(comments_open: bool, loading: bool, spinner: &str) -> L
             spans.extend(["Refresh ".into(), key("<R>"), " ".into()]);
         }
         spans.extend([
+            "Feed ".into(),
+            key("<Left/Right>"),
+            " ".into(),
+            key("<1-6>"),
+            " ".into(),
             "Move ".into(),
             key("<Up/Down>"),
             " Comments ".into(),

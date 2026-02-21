@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-const TOP_STORIES_URL: &str = "https://hacker-news.firebaseio.com/v0/topstories.json";
+const HN_API_BASE: &str = "https://hacker-news.firebaseio.com/v0";
 const ITEM_URL_BASE: &str = "https://hacker-news.firebaseio.com/v0/item";
 const HN_DISCUSSION_URL_BASE: &str = "https://news.ycombinator.com/item?id=";
 const DEFAULT_CONCURRENCY: usize = 20;
@@ -48,6 +48,29 @@ pub struct HackerNewsApi {
     client: reqwest::Client,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoryFeed {
+    Top,
+    New,
+    Ask,
+    Show,
+    Jobs,
+    Best,
+}
+
+impl StoryFeed {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Top => "topstories",
+            Self::New => "newstories",
+            Self::Ask => "askstories",
+            Self::Show => "showstories",
+            Self::Jobs => "jobstories",
+            Self::Best => "beststories",
+        }
+    }
+}
+
 impl HackerNewsApi {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -70,9 +93,10 @@ impl HackerNewsApi {
             .await
     }
 
-    pub async fn fetch_top_story_ids(&self) -> Result<Vec<u64>, Error> {
+    pub async fn fetch_story_ids(&self, feed: StoryFeed) -> Result<Vec<u64>, Error> {
+        let feed_url = format!("{HN_API_BASE}/{}.json", feed.endpoint());
         self.client
-            .get(TOP_STORIES_URL)
+            .get(feed_url)
             .send()
             .await?
             .error_for_status()?
@@ -80,7 +104,11 @@ impl HackerNewsApi {
             .await
     }
 
-    pub async fn fetch_items_by_ids(&self, ids: &[u64]) -> Result<Vec<Item>, Error> {
+    pub async fn fetch_items_by_ids(
+        &self,
+        ids: &[u64],
+        _feed: StoryFeed,
+    ) -> Result<Vec<Item>, Error> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
