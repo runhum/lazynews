@@ -1,0 +1,15 @@
+- Infinite scroll/Load more
+- Better colors
+- Bookmarking/read later
+    - Open all keybinding
+- Update in background
+    - Notify user of update
+- Tabs for new, past, comments etc
+- Search
+- Other news sources
+    - Show list to toggle on/off
+    - Header with category (tech, politics, etc)
+- Read state
+- Open/Show comments
+- Cache
+    - On refresh
