@@ -1,4 +1,4 @@
-use crate::hn::Item;
+use crate::hn::{Comment, Item};
 use color_eyre::eyre::OptionExt;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
 use futures::StreamExt;
@@ -11,6 +11,10 @@ const TICK_FPS: f64 = 30.0;
 pub enum AppEvent {
     Refresh,
     RefreshComplete(Result<Vec<Item>, String>),
+    LoadCommentsComplete {
+        post_id: u64,
+        result: Result<Vec<Comment>, String>,
+    },
     Quit,
     OpenPost(String),
 }

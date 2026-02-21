@@ -1,7 +1,7 @@
 - Infinite scroll/Load more
-- Better colors
 - Bookmarking/read later
-    - Open all keybinding
+    - Open all bookmarks keybinding
+    - Clear on exit
 - Update in background
     - Notify user of update
 - Tabs for new, past, comments etc
@@ -10,6 +10,7 @@
     - Show list to toggle on/off
     - Header with category (tech, politics, etc)
 - Read state
-- Open/Show comments
 - Cache
-    - On refresh
+- Keep position after refresh
+- Scrolling with mouse
+- Open comment links?
