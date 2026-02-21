@@ -6,6 +6,7 @@ use crate::{
         comment_lines as build_comment_lines, format_age, instructions_line,
     },
 };
+use chrono::Local;
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -16,7 +17,6 @@ use ratatui::{
     text::Line,
     widgets::{Block, List, ListItem, ListState, Paragraph},
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct App {
     running: bool,
@@ -350,13 +350,7 @@ impl App {
     }
 
     fn current_hhmm() -> String {
-        let seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
-        let minutes = (seconds / 60) % (24 * 60);
-        let hour = minutes / 60;
-        let minute = minutes % 60;
-        format!("{hour:02}:{minute:02}")
+        Local::now().format("%H:%M:%S").to_string()
     }
 
     fn refresh_posts(&mut self) {

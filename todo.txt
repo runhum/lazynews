@@ -1,4 +1,3 @@
-- Infinite scroll/Load more
 - Bookmarking/read later
     - Open all bookmarks keybinding
     - Clear on exit

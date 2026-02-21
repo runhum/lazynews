@@ -10,6 +10,7 @@ homepage = "https://github.com/runhum/lazynews"
 
 
 [dependencies]
+chrono = "0.4.43"
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3.32"
