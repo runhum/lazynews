@@ -18,6 +18,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, Tabs},
 };
 use std::collections::HashMap;
+use tokio_util::sync::CancellationToken;
 
 pub struct App {
     running: bool,
@@ -31,6 +32,9 @@ pub struct App {
     posts_notice: Option<String>,
     selected_feed: FeedTab,
     feed_cache: HashMap<FeedTab, CachedFeed>,
+    next_posts_request_id: u64,
+    active_posts_request_id: Option<u64>,
+    posts_request_cancel: Option<CancellationToken>,
     last_fetched: Option<String>,
     pub loading: bool,
     list_state: ListState,
@@ -164,6 +168,9 @@ impl App {
             posts_notice: None,
             selected_feed: FeedTab::Top,
             feed_cache: HashMap::new(),
+            next_posts_request_id: 0,
+            active_posts_request_id: None,
+            posts_request_cancel: None,
             last_fetched: None,
             loading: false,
             list_state: ListState::default(),
@@ -408,9 +415,6 @@ impl App {
         match event {
             AppEvent::Quit => self.exit(),
             AppEvent::Refresh => {
-                if self.loading {
-                    return;
-                }
                 self.posts_notice = None;
                 self.comments_open = false;
                 self.comments.clear();
@@ -424,7 +428,9 @@ impl App {
                 self.comment_start_lines.clear();
                 self.refresh_posts();
             }
-            AppEvent::PostsFetched(result) => self.handle_posts_fetched(result),
+            AppEvent::PostsFetched { request_id, result } => {
+                self.handle_posts_fetched(request_id, result)
+            }
             AppEvent::LoadCommentsComplete { post_id, result } => {
                 if !self.comments_open || self.comments_for_post_id != Some(post_id) {
                     return;
@@ -467,9 +473,24 @@ impl App {
         Local::now().format("%H:%M:%S").to_string()
     }
 
-    fn refresh_posts(&mut self) {
+    fn begin_posts_request(&mut self) -> (u64, CancellationToken) {
+        if let Some(cancel_token) = self.posts_request_cancel.take() {
+            cancel_token.cancel();
+        }
+
+        self.next_posts_request_id = self.next_posts_request_id.wrapping_add(1).max(1);
+        let request_id = self.next_posts_request_id;
+        self.active_posts_request_id = Some(request_id);
         self.loading = true;
         self.loading_frame = 0;
+
+        let cancel_token = CancellationToken::new();
+        self.posts_request_cancel = Some(cancel_token.clone());
+        (request_id, cancel_token)
+    }
+
+    fn refresh_posts(&mut self) {
+        let (request_id, cancel_token) = self.begin_posts_request();
         if self.posts.is_empty() {
             self.story_ids.clear();
             self.next_story_index = 0;
@@ -481,23 +502,24 @@ impl App {
 
         let client = self.hn_client.clone();
         self.events.send_async(async move {
-            let result = async {
-                let story_ids = client.fetch_story_ids(feed).await?;
-                let next_story_index = story_ids.len().min(POSTS_PAGE_SIZE);
-                let page_ids: Vec<u64> = story_ids.iter().take(next_story_index).copied().collect();
-                let items = client.fetch_items_by_ids(&page_ids, feed).await?;
+            let result: Result<PostsFetchResult, String> = tokio::select! {
+                _ = cancel_token.cancelled() => Err("Cancelled".to_string()),
+                result = async {
+                    let story_ids = client.fetch_story_ids(feed).await?;
+                    let next_story_index = story_ids.len().min(POSTS_PAGE_SIZE);
+                    let page_ids: Vec<u64> = story_ids.iter().take(next_story_index).copied().collect();
+                    let items = client.fetch_items_by_ids(&page_ids, feed).await?;
 
-                Ok(PostsFetchResult {
-                    mode: PostsFetchMode::Replace,
-                    story_ids: Some(story_ids),
-                    items,
-                    next_story_index,
-                })
-            }
-            .await
-            .map_err(|e: reqwest::Error| e.to_string());
+                    Ok(PostsFetchResult {
+                        mode: PostsFetchMode::Replace,
+                        story_ids: Some(story_ids),
+                        items,
+                        next_story_index,
+                    })
+                } => result.map_err(|e: reqwest::Error| e.to_string()),
+            };
 
-            AppEvent::PostsFetched(result)
+            AppEvent::PostsFetched { request_id, result }
         });
     }
 
@@ -511,8 +533,7 @@ impl App {
             return;
         }
 
-        self.loading = true;
-        self.loading_frame = 0;
+        let (request_id, cancel_token) = self.begin_posts_request();
 
         let start = self.next_story_index;
         let next_story_index = start
@@ -523,23 +544,32 @@ impl App {
         let client = self.hn_client.clone();
 
         self.events.send_async(async move {
-            let result = client
-                .fetch_items_by_ids(&page_ids, feed)
-                .await
-                .map(|items| PostsFetchResult {
-                    mode: PostsFetchMode::Append,
-                    story_ids: None,
-                    items,
-                    next_story_index,
-                })
-                .map_err(|e| e.to_string());
+            let result: Result<PostsFetchResult, String> = tokio::select! {
+                _ = cancel_token.cancelled() => Err("Cancelled".to_string()),
+                result = client.fetch_items_by_ids(&page_ids, feed) => {
+                    result
+                        .map(|items| PostsFetchResult {
+                            mode: PostsFetchMode::Append,
+                            story_ids: None,
+                            items,
+                            next_story_index,
+                        })
+                        .map_err(|e| e.to_string())
+                },
+            };
 
-            AppEvent::PostsFetched(result)
+            AppEvent::PostsFetched { request_id, result }
         });
     }
 
-    fn handle_posts_fetched(&mut self, result: Result<PostsFetchResult, String>) {
+    fn handle_posts_fetched(&mut self, request_id: u64, result: Result<PostsFetchResult, String>) {
+        if self.active_posts_request_id != Some(request_id) {
+            return;
+        }
+
         self.loading = false;
+        self.active_posts_request_id = None;
+        self.posts_request_cancel = None;
 
         match result {
             Ok(payload) => {
@@ -575,6 +605,9 @@ impl App {
                 self.cache_current_feed();
             }
             Err(err) => {
+                if err == "Cancelled" {
+                    return;
+                }
                 if self.posts.is_empty() {
                     self.posts_notice = Some(format!("Failed to load posts: {err}"));
                 }
@@ -712,10 +745,6 @@ impl App {
     }
 
     fn switch_feed(&mut self, delta: isize) {
-        if self.loading {
-            return;
-        }
-
         let count = FeedTab::ALL.len() as isize;
         let current = self.selected_feed.index() as isize;
         let next_index = (current + delta + count) % count;
@@ -724,7 +753,7 @@ impl App {
     }
 
     fn switch_to_feed(&mut self, next_feed: FeedTab) {
-        if self.loading || next_feed == self.selected_feed {
+        if next_feed == self.selected_feed {
             return;
         }
 

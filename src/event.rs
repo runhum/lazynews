@@ -24,7 +24,10 @@ pub struct PostsFetchResult {
 #[derive(Debug)]
 pub enum AppEvent {
     Refresh,
-    PostsFetched(Result<PostsFetchResult, String>),
+    PostsFetched {
+        request_id: u64,
+        result: Result<PostsFetchResult, String>,
+    },
     LoadCommentsComplete {
         post_id: u64,
         result: Result<Vec<Comment>, String>,
