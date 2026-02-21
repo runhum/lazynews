@@ -15,6 +15,10 @@ pub struct Item {
     pub id: u64,
     pub title: Option<String>,
     pub url: Option<String>,
+    pub score: Option<u64>,
+    pub descendants: Option<u64>,
+    pub by: Option<String>,
+    pub time: Option<u64>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
     #[serde(default)]
@@ -51,6 +55,10 @@ impl HackerNewsApi {
     }
 
     pub async fn fetch_items(&self, limit: usize) -> Result<Vec<Item>, Error> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let ids = self
             .client
             .get(TOP_STORIES_URL)
@@ -82,7 +90,11 @@ impl HackerNewsApi {
                 }
                 item
             })
-            .filter(|item| !item.dead && !item.deleted && item.kind.as_deref() == Some("story"))
+            .filter(|item| {
+                let is_supported = matches!(item.kind.as_deref(), Some("story" | "job"));
+                !item.dead && !item.deleted && is_supported
+            })
+            .take(limit)
             .collect())
     }
 }

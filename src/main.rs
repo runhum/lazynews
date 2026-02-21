@@ -3,6 +3,7 @@ use crate::app::App;
 mod app;
 mod event;
 mod hn;
+mod ui;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
