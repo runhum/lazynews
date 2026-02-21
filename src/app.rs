@@ -1,6 +1,6 @@
 use crate::{
     event::{AppEvent, Event, EventHandler, PostsFetchMode, PostsFetchResult},
-    hn::{Comment, HackerNewsApi, Item},
+    hn::{Comment, HackerNewsApi, Item, StoryFeed},
     ui::{
         COMMENT_BORDER_COLOR, POST_META_COLOR, POST_SELECTED_COLOR, SPINNER_FRAMES,
         comment_lines as build_comment_lines, format_age, instructions_line,
@@ -15,18 +15,22 @@ use ratatui::{
     style::{Style, Stylize},
     symbols::border,
     text::Line,
-    widgets::{Block, List, ListItem, ListState, Paragraph},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Tabs},
 };
+use std::collections::HashMap;
 
 pub struct App {
     running: bool,
     hn_client: HackerNewsApi,
     events: EventHandler,
     loading_frame: usize,
-    top_story_ids: Vec<u64>,
+    story_ids: Vec<u64>,
     next_story_index: usize,
     has_more_posts: bool,
     posts: Vec<Post>,
+    posts_notice: Option<String>,
+    selected_feed: FeedTab,
+    feed_cache: HashMap<FeedTab, CachedFeed>,
     last_fetched: Option<String>,
     pub loading: bool,
     list_state: ListState,
@@ -42,7 +46,7 @@ pub struct App {
     comment_start_lines: Vec<u16>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Post {
     id: u64,
     title: String,
@@ -70,6 +74,78 @@ impl PostType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum FeedTab {
+    Top,
+    New,
+    Ask,
+    Show,
+    Jobs,
+    Best,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFeed {
+    story_ids: Vec<u64>,
+    next_story_index: usize,
+    has_more_posts: bool,
+    posts: Vec<Post>,
+    selected_index: Option<usize>,
+    last_fetched: Option<String>,
+}
+
+impl FeedTab {
+    const ALL: [Self; 6] = [
+        Self::Top,
+        Self::New,
+        Self::Ask,
+        Self::Show,
+        Self::Jobs,
+        Self::Best,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::New => "new",
+            Self::Ask => "ask",
+            Self::Show => "show",
+            Self::Jobs => "jobs",
+            Self::Best => "best",
+        }
+    }
+
+    fn posts_title(self) -> &'static str {
+        match self {
+            Self::Top => "Top Stories",
+            Self::New => "New Stories",
+            Self::Ask => "Ask HN",
+            Self::Show => "Show HN",
+            Self::Jobs => "Jobs",
+            Self::Best => "Best Stories",
+        }
+    }
+
+    fn api_feed(self) -> StoryFeed {
+        match self {
+            Self::Top => StoryFeed::Top,
+            Self::New => StoryFeed::New,
+            Self::Ask => StoryFeed::Ask,
+            Self::Show => StoryFeed::Show,
+            Self::Jobs => StoryFeed::Jobs,
+            Self::Best => StoryFeed::Best,
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0)
+    }
+
+    fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
+    }
+}
+
 const POSTS_PAGE_SIZE: usize = 30;
 const LOAD_MORE_TRIGGER_NUMERATOR: usize = 3;
 const LOAD_MORE_TRIGGER_DENOMINATOR: usize = 4;
@@ -81,10 +157,13 @@ impl App {
             hn_client: HackerNewsApi::new(),
             events: EventHandler::new(),
             loading_frame: 0,
-            top_story_ids: Vec::new(),
+            story_ids: Vec::new(),
             next_story_index: 0,
             has_more_posts: true,
             posts: Vec::new(),
+            posts_notice: None,
+            selected_feed: FeedTab::Top,
+            feed_cache: HashMap::new(),
             last_fetched: None,
             loading: false,
             list_state: ListState::default(),
@@ -127,19 +206,47 @@ impl App {
         let content_area = outer_block.inner(frame.area());
         frame.render_widget(outer_block, frame.area());
 
+        let layout = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]);
+        let areas = layout.split(content_area);
+        self.render_feed_tabs(frame, areas[0]);
+
         if self.comments_open {
             let layout =
                 Layout::horizontal([Constraint::Percentage(33), Constraint::Percentage(67)]);
-            let areas = layout.split(content_area);
-            self.render_posts_list(frame, areas[0]);
-            self.render_comments_pane(frame, areas[1], spinner);
+            let panes = layout.split(areas[1]);
+            self.render_posts_list(frame, panes[0]);
+            self.render_comments_pane(frame, panes[1], spinner);
         } else {
-            self.render_posts_list(frame, content_area);
+            self.render_posts_list(frame, areas[1]);
         }
     }
 
+    fn render_feed_tabs(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let titles = FeedTab::ALL.iter().map(|tab| tab.label());
+        let block = Block::bordered()
+            .title("Feeds")
+            .border_style(if self.comments_open {
+                Style::new().fg(POST_META_COLOR)
+            } else {
+                Style::new().fg(COMMENT_BORDER_COLOR)
+            });
+
+        let tabs = Tabs::new(titles)
+            .block(block)
+            .select(self.selected_feed.index())
+            .style(Style::new().fg(POST_META_COLOR))
+            .highlight_style(Style::new().fg(POST_SELECTED_COLOR).bold())
+            .divider("|");
+
+        frame.render_widget(tabs, area);
+    }
+
     fn render_posts_list(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let items: Vec<ListItem> = if self.posts.is_empty() {
+        let items: Vec<ListItem> = if let Some(notice) = self.posts_notice.as_deref() {
+            vec![ListItem::new(
+                Line::from(notice.to_string()).style(Style::new().fg(POST_META_COLOR)),
+            )]
+        } else if self.posts.is_empty() {
             if self.loading {
                 vec![ListItem::new(Line::from(format!(
                     "Refreshing {}",
@@ -191,10 +298,12 @@ impl App {
                 .collect()
         };
 
-        let mut block = Block::bordered().title("Top Stories");
-        if self.comments_open {
-            block = block.border_style(Style::new().fg(POST_META_COLOR));
-        }
+        let mut block = Block::bordered().title(self.selected_feed.posts_title());
+        block = if self.comments_open {
+            block.border_style(Style::new().fg(POST_META_COLOR))
+        } else {
+            block.border_style(Style::new().fg(COMMENT_BORDER_COLOR))
+        };
         if let Some(last_fetched) = self.last_fetched.as_deref() {
             block = block.title(
                 Line::from(format!("last fetched {last_fetched}"))
@@ -273,6 +382,11 @@ impl App {
         match key_event.code {
             KeyCode::Char('q') => self.events.send(AppEvent::Quit),
             KeyCode::Char('r') => self.events.send(AppEvent::Refresh),
+            KeyCode::Char(digit) if digit.is_ascii_digit() => self.select_feed_by_digit(digit),
+            KeyCode::Left => self.select_previous_feed(),
+            KeyCode::Right => self.select_next_feed(),
+            KeyCode::BackTab => self.select_previous_feed(),
+            KeyCode::Tab => self.select_next_feed(),
             KeyCode::Up => self.select_previous(),
             KeyCode::Down => {
                 self.select_next();
@@ -297,7 +411,7 @@ impl App {
                 if self.loading {
                     return;
                 }
-                self.has_more_posts = true;
+                self.posts_notice = None;
                 self.comments_open = false;
                 self.comments.clear();
                 self.comments_for_post_id = None;
@@ -356,26 +470,26 @@ impl App {
     fn refresh_posts(&mut self) {
         self.loading = true;
         self.loading_frame = 0;
-        self.top_story_ids.clear();
-        self.next_story_index = 0;
-        self.posts.clear();
-        self.list_state.select(None);
+        if self.posts.is_empty() {
+            self.story_ids.clear();
+            self.next_story_index = 0;
+            self.has_more_posts = true;
+            self.list_state.select(None);
+        }
+        self.posts_notice = None;
+        let feed = self.selected_feed.api_feed();
 
         let client = self.hn_client.clone();
         self.events.send_async(async move {
             let result = async {
-                let top_story_ids = client.fetch_top_story_ids().await?;
-                let next_story_index = top_story_ids.len().min(POSTS_PAGE_SIZE);
-                let page_ids: Vec<u64> = top_story_ids
-                    .iter()
-                    .take(next_story_index)
-                    .copied()
-                    .collect();
-                let items = client.fetch_items_by_ids(&page_ids).await?;
+                let story_ids = client.fetch_story_ids(feed).await?;
+                let next_story_index = story_ids.len().min(POSTS_PAGE_SIZE);
+                let page_ids: Vec<u64> = story_ids.iter().take(next_story_index).copied().collect();
+                let items = client.fetch_items_by_ids(&page_ids, feed).await?;
 
                 Ok(PostsFetchResult {
                     mode: PostsFetchMode::Replace,
-                    top_story_ids: Some(top_story_ids),
+                    story_ids: Some(story_ids),
                     items,
                     next_story_index,
                 })
@@ -392,7 +506,7 @@ impl App {
             return;
         }
 
-        if self.next_story_index >= self.top_story_ids.len() {
+        if self.next_story_index >= self.story_ids.len() {
             self.has_more_posts = false;
             return;
         }
@@ -403,17 +517,18 @@ impl App {
         let start = self.next_story_index;
         let next_story_index = start
             .saturating_add(POSTS_PAGE_SIZE)
-            .min(self.top_story_ids.len());
-        let page_ids: Vec<u64> = self.top_story_ids[start..next_story_index].to_vec();
+            .min(self.story_ids.len());
+        let page_ids: Vec<u64> = self.story_ids[start..next_story_index].to_vec();
+        let feed = self.selected_feed.api_feed();
         let client = self.hn_client.clone();
 
         self.events.send_async(async move {
             let result = client
-                .fetch_items_by_ids(&page_ids)
+                .fetch_items_by_ids(&page_ids, feed)
                 .await
                 .map(|items| PostsFetchResult {
                     mode: PostsFetchMode::Append,
-                    top_story_ids: None,
+                    story_ids: None,
                     items,
                     next_story_index,
                 })
@@ -428,8 +543,10 @@ impl App {
 
         match result {
             Ok(payload) => {
-                if let Some(top_story_ids) = payload.top_story_ids {
-                    self.top_story_ids = top_story_ids;
+                self.posts_notice = None;
+
+                if let Some(story_ids) = payload.story_ids {
+                    self.story_ids = story_ids;
                 }
 
                 self.next_story_index = payload.next_story_index;
@@ -445,7 +562,7 @@ impl App {
                 }
                 self.last_fetched = Some(Self::current_hhmm());
 
-                self.has_more_posts = self.next_story_index < self.top_story_ids.len();
+                self.has_more_posts = self.next_story_index < self.story_ids.len();
 
                 if self.posts.is_empty() {
                     self.list_state.select(None);
@@ -454,8 +571,14 @@ impl App {
                     let max_index = self.posts.len().saturating_sub(1);
                     self.list_state.select(Some(selected.min(max_index)));
                 }
+
+                self.cache_current_feed();
             }
-            Err(_) => {}
+            Err(err) => {
+                if self.posts.is_empty() {
+                    self.posts_notice = Some(format!("Failed to load posts: {err}"));
+                }
+            }
         }
     }
 
@@ -497,9 +620,9 @@ impl App {
                     return None;
                 }
 
+                let post_type = PostType::from_kind(item.kind.as_deref())?;
                 let title = item.title?;
                 let url = item.url?;
-                let post_type = PostType::from_kind(item.kind.as_deref())?;
 
                 Some(Post {
                     id: item.id,
@@ -516,6 +639,101 @@ impl App {
                 })
             })
             .collect()
+    }
+
+    fn cache_current_feed(&mut self) {
+        self.feed_cache.insert(
+            self.selected_feed,
+            CachedFeed {
+                story_ids: self.story_ids.clone(),
+                next_story_index: self.next_story_index,
+                has_more_posts: self.has_more_posts,
+                posts: self.posts.clone(),
+                selected_index: self.list_state.selected(),
+                last_fetched: self.last_fetched.clone(),
+            },
+        );
+    }
+
+    fn restore_feed_from_cache(&mut self, feed: FeedTab) -> bool {
+        let Some(cached) = self.feed_cache.get(&feed).cloned() else {
+            return false;
+        };
+
+        self.story_ids = cached.story_ids;
+        self.next_story_index = cached.next_story_index;
+        self.has_more_posts = cached.has_more_posts;
+        self.posts = cached.posts;
+        self.last_fetched = cached.last_fetched;
+        self.posts_notice = None;
+
+        if self.posts.is_empty() {
+            self.list_state.select(None);
+        } else {
+            let selected = cached
+                .selected_index
+                .unwrap_or(0)
+                .min(self.posts.len().saturating_sub(1));
+            self.list_state.select(Some(selected));
+        }
+
+        true
+    }
+
+    fn clear_feed_state(&mut self) {
+        self.story_ids.clear();
+        self.next_story_index = 0;
+        self.has_more_posts = true;
+        self.posts.clear();
+        self.posts_notice = None;
+        self.last_fetched = None;
+        self.list_state.select(None);
+    }
+
+    fn select_next_feed(&mut self) {
+        self.switch_feed(1);
+    }
+
+    fn select_previous_feed(&mut self) {
+        self.switch_feed(-1);
+    }
+
+    fn select_feed_by_digit(&mut self, digit: char) {
+        let Some(number) = digit.to_digit(10) else {
+            return;
+        };
+
+        let index = number as usize;
+        if index == 0 || index > FeedTab::ALL.len() {
+            return;
+        }
+
+        self.switch_to_feed(FeedTab::ALL[index - 1]);
+    }
+
+    fn switch_feed(&mut self, delta: isize) {
+        if self.loading {
+            return;
+        }
+
+        let count = FeedTab::ALL.len() as isize;
+        let current = self.selected_feed.index() as isize;
+        let next_index = (current + delta + count) % count;
+        let next_feed = FeedTab::from_index(next_index as usize);
+        self.switch_to_feed(next_feed);
+    }
+
+    fn switch_to_feed(&mut self, next_feed: FeedTab) {
+        if self.loading || next_feed == self.selected_feed {
+            return;
+        }
+
+        self.cache_current_feed();
+        self.selected_feed = next_feed;
+        if !self.restore_feed_from_cache(next_feed) {
+            self.clear_feed_state();
+        }
+        self.events.send(AppEvent::Refresh);
     }
 
     fn select_next(&mut self) {
