@@ -23,6 +23,7 @@ pub struct Item {
     pub deleted: bool,
 }
 
+#[derive(Clone)]
 pub struct HackerNewsApi {
     client: reqwest::Client,
 }

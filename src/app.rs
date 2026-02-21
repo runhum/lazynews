@@ -1,6 +1,9 @@
+use crate::{
+    event::{AppEvent, Event, EventHandler},
+    hn::HackerNewsApi,
+};
 use color_eyre::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use futures::StreamExt;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     style::{Color, Style, Stylize},
@@ -9,16 +12,19 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState},
 };
 
-use crate::hn::HackerNewsApi;
-
 const SELECTED_ORANGE: Color = Color::Rgb(255, 149, 0);
+const REFRESH_LIMIT: usize = 30;
+
+const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 pub struct App {
+    running: bool,
     hn_client: HackerNewsApi,
+    events: EventHandler,
+    loading_frame: usize,
     posts: Vec<Post>,
-    pub exit: bool,
-    pub loading: bool,
     status: Option<String>,
+    pub loading: bool,
     list_state: ListState,
 }
 
@@ -31,30 +37,45 @@ struct Post {
 impl App {
     pub fn new() -> Self {
         Self {
+            running: true,
             hn_client: HackerNewsApi::new(),
+            events: EventHandler::new(),
+            loading_frame: 0,
             posts: Vec::new(),
-            exit: false,
-            loading: false,
             status: None,
+            loading: false,
             list_state: ListState::default(),
         }
     }
 
     pub async fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let mut events = EventStream::new();
-        self.refresh().await?;
-        while !self.exit {
+        while self.running {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events(&mut events).await?;
+            match self.events.next().await? {
+                Event::App(app_event) => self.handle_app_event(app_event),
+                Event::Tick => self.on_tick(),
+                Event::Key(key_event) => self.handle_key_event(key_event)?,
+            }
         }
         Ok(())
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let title = Line::from("lazynews".bold());
+        let title = if let Some(status) = &self.status {
+            format!("lazynews | {status}")
+        } else {
+            "lazynews".into()
+        };
+
+        let title = Line::from(title.bold());
+
+        let spinner = self.spinner_frame();
+
         let instructions = if self.loading {
             Line::from(vec![
                 "Refreshing ".yellow().bold(),
+                spinner.yellow().bold(),
+                " ".into(),
                 " Move ".into(),
                 "<Up/Down>".blue().bold(),
                 " Open ".into(),
@@ -81,9 +102,7 @@ impl App {
             .border_set(border::THICK);
 
         let items: Vec<ListItem> = if self.posts.is_empty() {
-            vec![ListItem::new(Line::from(
-                "No posts loaded yet. Press <R> to refresh.",
-            ))]
+            vec![ListItem::new(Line::from(format!("{spinner}")))]
         } else {
             self.posts
                 .iter()
@@ -100,19 +119,7 @@ impl App {
         frame.render_stateful_widget(list, frame.area(), &mut self.list_state);
     }
 
-    async fn handle_events(&mut self, events: &mut EventStream) -> Result<()> {
-        if let Some(event) = events.next().await {
-            match event? {
-                Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                    self.handle_key_event(key_event).await?
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
+    fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
         if matches!(key_event.code, KeyCode::Char('c'))
             && key_event.modifiers.contains(KeyModifiers::CONTROL)
         {
@@ -121,8 +128,8 @@ impl App {
         }
 
         match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Char('r') => self.refresh().await?,
+            KeyCode::Char('q') => self.events.send(AppEvent::Quit),
+            KeyCode::Char('r') => self.events.send(AppEvent::Refresh),
             KeyCode::Up => self.select_previous(),
             KeyCode::Down => self.select_next(),
             KeyCode::Enter | KeyCode::Char('o') => self.activate_selected(),
@@ -133,26 +140,60 @@ impl App {
     }
 
     fn exit(&mut self) {
-        self.exit = true;
+        self.running = false;
     }
 
-    async fn refresh(&mut self) -> Result<()> {
-        self.loading = true;
-        let items = self.hn_client.fetch_items(30).await?;
-        self.loading = false;
+    fn handle_app_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::Quit => self.exit(),
+            AppEvent::Refresh => {
+                if self.loading {
+                    return;
+                }
+                self.loading = true;
+                self.loading_frame = 0;
+                let client = self.hn_client.clone();
 
-        self.posts = items
-            .into_iter()
-            .filter_map(|item| match (item.title, item.url) {
-                (Some(title), Some(url)) => Some(Post { title, url }),
-                _ => None,
-            })
-            .collect();
+                self.events.send_async(async move {
+                    let result = client
+                        .fetch_items(REFRESH_LIMIT)
+                        .await
+                        .map_err(|e| e.to_string());
+                    AppEvent::RefreshComplete(result)
+                });
+            }
+            AppEvent::RefreshComplete(result) => {
+                self.loading = false;
+                match result {
+                    Ok(items) => {
+                        self.posts = items
+                            .into_iter()
+                            .filter_map(|item| match (item.title, item.url) {
+                                (Some(title), Some(url)) => Some(Post { title, url }),
+                                _ => None,
+                            })
+                            .collect();
+                        self.list_state
+                            .select(if self.posts.is_empty() { None } else { Some(0) });
+                        self.status = Some(format!("Loaded {} posts", self.posts.len()));
+                    }
+                    Err(err) => {
+                        self.status = Some(format!("Refresh failed: {err}"));
+                    }
+                }
+            }
+            AppEvent::OpenPost(url) => todo!(),
+        }
+    }
 
-        self.list_state
-            .select(if self.posts.is_empty() { None } else { Some(0) });
+    fn on_tick(&mut self) {
+        if self.loading {
+            self.loading_frame = self.loading_frame.wrapping_add(1);
+        }
+    }
 
-        Ok(())
+    fn spinner_frame(&self) -> &'static str {
+        SPINNER_FRAMES[self.loading_frame % SPINNER_FRAMES.len()]
     }
 
     fn select_next(&mut self) {
