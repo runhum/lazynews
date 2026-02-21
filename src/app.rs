@@ -1,6 +1,6 @@
 use crate::{
-    event::{AppEvent, Event, EventHandler},
-    hn::{Comment, HackerNewsApi},
+    event::{AppEvent, Event, EventHandler, PostsFetchMode, PostsFetchResult},
+    hn::{Comment, HackerNewsApi, Item},
     ui::{
         COMMENT_BORDER_COLOR, POST_META_COLOR, POST_SELECTED_COLOR, SPINNER_FRAMES,
         comment_lines as build_comment_lines, format_age, instructions_line,
@@ -16,14 +16,18 @@ use ratatui::{
     text::Line,
     widgets::{Block, List, ListItem, ListState, Paragraph},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct App {
     running: bool,
     hn_client: HackerNewsApi,
     events: EventHandler,
     loading_frame: usize,
+    top_story_ids: Vec<u64>,
+    next_story_index: usize,
+    has_more_posts: bool,
     posts: Vec<Post>,
-    status: Option<String>,
+    last_fetched: Option<String>,
     pub loading: bool,
     list_state: ListState,
     comments_open: bool,
@@ -66,6 +70,10 @@ impl PostType {
     }
 }
 
+const POSTS_PAGE_SIZE: usize = 30;
+const LOAD_MORE_TRIGGER_NUMERATOR: usize = 3;
+const LOAD_MORE_TRIGGER_DENOMINATOR: usize = 4;
+
 impl App {
     pub fn new() -> Self {
         Self {
@@ -73,8 +81,11 @@ impl App {
             hn_client: HackerNewsApi::new(),
             events: EventHandler::new(),
             loading_frame: 0,
+            top_story_ids: Vec::new(),
+            next_story_index: 0,
+            has_more_posts: true,
             posts: Vec::new(),
-            status: None,
+            last_fetched: None,
             loading: false,
             list_state: ListState::default(),
             comments_open: false,
@@ -180,13 +191,17 @@ impl App {
                 .collect()
         };
 
-        let block = if self.comments_open {
-            Block::bordered()
-                .title("Top Stories")
-                .border_style(Style::new().fg(POST_META_COLOR))
-        } else {
-            Block::bordered().title("Top Stories")
-        };
+        let mut block = Block::bordered().title("Top Stories");
+        if self.comments_open {
+            block = block.border_style(Style::new().fg(POST_META_COLOR));
+        }
+        if let Some(last_fetched) = self.last_fetched.as_deref() {
+            block = block.title(
+                Line::from(format!("last fetched {last_fetched}"))
+                    .right_aligned()
+                    .style(Style::new().fg(POST_META_COLOR)),
+            );
+        }
 
         let list = List::new(items).block(block).highlight_symbol("> ");
         frame.render_stateful_widget(list, area, &mut self.list_state);
@@ -259,7 +274,10 @@ impl App {
             KeyCode::Char('q') => self.events.send(AppEvent::Quit),
             KeyCode::Char('r') => self.events.send(AppEvent::Refresh),
             KeyCode::Up => self.select_previous(),
-            KeyCode::Down => self.select_next(),
+            KeyCode::Down => {
+                self.select_next();
+                self.load_more_posts();
+            }
             KeyCode::Enter => self.open_comments_for_selected(),
             KeyCode::Char('o') => self.open_selected_post(),
             _ => {}
@@ -279,8 +297,7 @@ impl App {
                 if self.loading {
                     return;
                 }
-                self.loading = true;
-                self.loading_frame = 0;
+                self.has_more_posts = true;
                 self.comments_open = false;
                 self.comments.clear();
                 self.comments_for_post_id = None;
@@ -291,47 +308,9 @@ impl App {
                 self.comments_viewport_height = 0;
                 self.comment_line_count = 0;
                 self.comment_start_lines.clear();
-
-                let client = self.hn_client.clone();
-                self.events.send_async(async move {
-                    let result = client.fetch_items(30).await.map_err(|e| e.to_string());
-                    AppEvent::RefreshComplete(result)
-                });
+                self.refresh_posts();
             }
-            AppEvent::RefreshComplete(result) => {
-                self.loading = false;
-                match result {
-                    Ok(items) => {
-                        self.posts = items
-                            .into_iter()
-                            .filter_map(|item| {
-                                let title = item.title?;
-                                let url = item.url?;
-                                let post_type = PostType::from_kind(item.kind.as_deref())?;
-
-                                Some(Post {
-                                    id: item.id,
-                                    title,
-                                    url,
-                                    post_type,
-                                    points: item.score.unwrap_or_default(),
-                                    comments: item.descendants.unwrap_or_default(),
-                                    author: item
-                                        .by
-                                        .filter(|author| !author.is_empty())
-                                        .unwrap_or_else(|| "unknown".to_string()),
-                                    published_at: item.time.unwrap_or_default(),
-                                })
-                            })
-                            .collect();
-                        self.list_state
-                            .select(if self.posts.is_empty() { None } else { Some(0) });
-                    }
-                    Err(err) => {
-                        self.status = Some(format!("Refresh failed: {err}"));
-                    }
-                }
-            }
+            AppEvent::PostsFetched(result) => self.handle_posts_fetched(result),
             AppEvent::LoadCommentsComplete { post_id, result } => {
                 if !self.comments_open || self.comments_for_post_id != Some(post_id) {
                     return;
@@ -354,14 +333,9 @@ impl App {
                     }
                 }
             }
-            AppEvent::OpenPost(url) => match webbrowser::open(&url) {
-                Ok(_) => {
-                    self.status = Some(format!("Opened {}", url));
-                }
-                Err(err) => {
-                    self.status = Some(format!("Failed to open URL: {err}"));
-                }
-            },
+            AppEvent::OpenPost(url) => {
+                let _ = webbrowser::open(&url);
+            }
         }
     }
 
@@ -373,6 +347,181 @@ impl App {
 
     fn spinner_frame(&self) -> &'static str {
         SPINNER_FRAMES[self.loading_frame % SPINNER_FRAMES.len()]
+    }
+
+    fn current_hhmm() -> String {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let minutes = (seconds / 60) % (24 * 60);
+        let hour = minutes / 60;
+        let minute = minutes % 60;
+        format!("{hour:02}:{minute:02}")
+    }
+
+    fn refresh_posts(&mut self) {
+        self.loading = true;
+        self.loading_frame = 0;
+        self.top_story_ids.clear();
+        self.next_story_index = 0;
+        self.posts.clear();
+        self.list_state.select(None);
+
+        let client = self.hn_client.clone();
+        self.events.send_async(async move {
+            let result = async {
+                let top_story_ids = client.fetch_top_story_ids().await?;
+                let next_story_index = top_story_ids.len().min(POSTS_PAGE_SIZE);
+                let page_ids: Vec<u64> = top_story_ids
+                    .iter()
+                    .take(next_story_index)
+                    .copied()
+                    .collect();
+                let items = client.fetch_items_by_ids(&page_ids).await?;
+
+                Ok(PostsFetchResult {
+                    mode: PostsFetchMode::Replace,
+                    top_story_ids: Some(top_story_ids),
+                    items,
+                    next_story_index,
+                })
+            }
+            .await
+            .map_err(|e: reqwest::Error| e.to_string());
+
+            AppEvent::PostsFetched(result)
+        });
+    }
+
+    fn request_more_posts(&mut self) {
+        if self.loading || !self.has_more_posts {
+            return;
+        }
+
+        if self.next_story_index >= self.top_story_ids.len() {
+            self.has_more_posts = false;
+            return;
+        }
+
+        self.loading = true;
+        self.loading_frame = 0;
+
+        let start = self.next_story_index;
+        let next_story_index = start
+            .saturating_add(POSTS_PAGE_SIZE)
+            .min(self.top_story_ids.len());
+        let page_ids: Vec<u64> = self.top_story_ids[start..next_story_index].to_vec();
+        let client = self.hn_client.clone();
+
+        self.events.send_async(async move {
+            let result = client
+                .fetch_items_by_ids(&page_ids)
+                .await
+                .map(|items| PostsFetchResult {
+                    mode: PostsFetchMode::Append,
+                    top_story_ids: None,
+                    items,
+                    next_story_index,
+                })
+                .map_err(|e| e.to_string());
+
+            AppEvent::PostsFetched(result)
+        });
+    }
+
+    fn handle_posts_fetched(&mut self, result: Result<PostsFetchResult, String>) {
+        self.loading = false;
+
+        match result {
+            Ok(payload) => {
+                if let Some(top_story_ids) = payload.top_story_ids {
+                    self.top_story_ids = top_story_ids;
+                }
+
+                self.next_story_index = payload.next_story_index;
+                let incoming_posts = Self::posts_from_items(payload.items);
+
+                match payload.mode {
+                    PostsFetchMode::Replace => {
+                        self.posts = incoming_posts;
+                    }
+                    PostsFetchMode::Append => {
+                        self.posts.extend(incoming_posts);
+                    }
+                }
+                self.last_fetched = Some(Self::current_hhmm());
+
+                self.has_more_posts = self.next_story_index < self.top_story_ids.len();
+
+                if self.posts.is_empty() {
+                    self.list_state.select(None);
+                } else {
+                    let selected = self.list_state.selected().unwrap_or(0);
+                    let max_index = self.posts.len().saturating_sub(1);
+                    self.list_state.select(Some(selected.min(max_index)));
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn has_reached_load_more_threshold(&self) -> bool {
+        let len = self.posts.len();
+        if len == 0 {
+            return self.has_more_posts;
+        }
+
+        let Some(selected_index) = self.list_state.selected() else {
+            return false;
+        };
+
+        let threshold_count = len
+            .saturating_mul(LOAD_MORE_TRIGGER_NUMERATOR)
+            .saturating_add(LOAD_MORE_TRIGGER_DENOMINATOR - 1)
+            / LOAD_MORE_TRIGGER_DENOMINATOR;
+
+        selected_index.saturating_add(1) >= threshold_count.max(1)
+    }
+
+    fn load_more_posts(&mut self) {
+        if self.loading || self.comments_open || !self.has_more_posts {
+            return;
+        }
+
+        if !self.has_reached_load_more_threshold() {
+            return;
+        }
+
+        self.request_more_posts();
+    }
+
+    fn posts_from_items(items: Vec<Item>) -> Vec<Post> {
+        items
+            .into_iter()
+            .filter_map(|item| {
+                if item.dead || item.deleted {
+                    return None;
+                }
+
+                let title = item.title?;
+                let url = item.url?;
+                let post_type = PostType::from_kind(item.kind.as_deref())?;
+
+                Some(Post {
+                    id: item.id,
+                    title,
+                    url,
+                    post_type,
+                    points: item.score.unwrap_or_default(),
+                    comments: item.descendants.unwrap_or_default(),
+                    author: item
+                        .by
+                        .filter(|author| !author.is_empty())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    published_at: item.time.unwrap_or_default(),
+                })
+            })
+            .collect()
     }
 
     fn select_next(&mut self) {

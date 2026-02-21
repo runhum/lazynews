@@ -70,21 +70,22 @@ impl HackerNewsApi {
             .await
     }
 
-    pub async fn fetch_items(&self, limit: usize) -> Result<Vec<Item>, Error> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-
-        let ids = self
-            .client
+    pub async fn fetch_top_story_ids(&self) -> Result<Vec<u64>, Error> {
+        self.client
             .get(TOP_STORIES_URL)
             .send()
             .await?
             .error_for_status()?
             .json::<Vec<u64>>()
-            .await?;
+            .await
+    }
 
-        let mut indexed: Vec<(usize, Item)> = stream::iter(ids.into_iter().take(limit).enumerate())
+    pub async fn fetch_items_by_ids(&self, ids: &[u64]) -> Result<Vec<Item>, Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut indexed: Vec<(usize, Item)> = stream::iter(ids.iter().copied().enumerate())
             .map(|(idx, id)| async move {
                 self.fetch_single_item(id)
                     .await
@@ -110,7 +111,6 @@ impl HackerNewsApi {
                 let is_supported = matches!(item.kind.as_deref(), Some("story" | "job"));
                 !item.dead && !item.deleted && is_supported
             })
-            .take(limit)
             .collect())
     }
 

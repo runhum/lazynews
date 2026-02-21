@@ -7,10 +7,24 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const TICK_FPS: f64 = 30.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostsFetchMode {
+    Replace,
+    Append,
+}
+
+#[derive(Debug)]
+pub struct PostsFetchResult {
+    pub mode: PostsFetchMode,
+    pub top_story_ids: Option<Vec<u64>>,
+    pub items: Vec<Item>,
+    pub next_story_index: usize,
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     Refresh,
-    RefreshComplete(Result<Vec<Item>, String>),
+    PostsFetched(Result<PostsFetchResult, String>),
     LoadCommentsComplete {
         post_id: u64,
         result: Result<Vec<Comment>, String>,
