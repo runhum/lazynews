@@ -4,6 +4,10 @@ use ratatui::style::Color;
 
 pub const POST_SELECTED_COLOR: Color = Color::Rgb(255, 149, 0);
 pub const POST_META_COLOR: Color = Color::Rgb(140, 140, 140);
+pub const COMMENT_AUTHOR_COLOR: Color = Color::Rgb(102, 217, 239);
+pub const COMMENT_TEXT_COLOR: Color = Color::Rgb(225, 225, 225);
+pub const COMMENT_INDENT_COLOR: Color = Color::Rgb(90, 90, 90);
+pub const COMMENT_BORDER_COLOR: Color = Color::Rgb(255, 149, 0);
 pub const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 pub fn format_age(unix_seconds: u64) -> String {
