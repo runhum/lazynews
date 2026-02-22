@@ -5,7 +5,7 @@ use futures::StreamExt;
 use std::{future::Future, result::Result, time::Duration};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-const TICK_FPS: f64 = 30.0;
+const TICK_FPS: f64 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostsFetchMode {

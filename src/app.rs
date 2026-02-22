@@ -219,12 +219,25 @@ impl App {
 
     pub async fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.events.send(AppEvent::Refresh);
+        let mut should_draw = true;
         while self.running {
-            terminal.draw(|frame| self.draw(frame))?;
+            if should_draw {
+                terminal.draw(|frame| self.draw(frame))?;
+                should_draw = false;
+            }
+
             match self.events.next().await? {
-                Event::App(app_event) => self.handle_app_event(app_event),
-                Event::Tick => self.on_tick(),
-                Event::Key(key_event) => self.handle_key_event(key_event)?,
+                Event::App(app_event) => {
+                    self.handle_app_event(app_event);
+                    should_draw = true;
+                }
+                Event::Tick => {
+                    should_draw |= self.on_tick();
+                }
+                Event::Key(key_event) => {
+                    self.handle_key_event(key_event)?;
+                    should_draw = true;
+                }
             }
         }
         Ok(())
@@ -637,10 +650,13 @@ impl App {
         }
     }
 
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self) -> bool {
         if self.loading || (self.comments_open && self.comments_loading) {
             self.loading_frame = self.loading_frame.wrapping_add(1);
+            return true;
         }
+
+        false
     }
 
     fn spinner_frame(&self) -> &'static str {
