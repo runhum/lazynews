@@ -1,8 +1,10 @@
 use crate::app::App;
 
 mod app;
+mod comments_nav;
 mod event;
 mod hn;
+mod input;
 mod ui;
 
 #[tokio::main]

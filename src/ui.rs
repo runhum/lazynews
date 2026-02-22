@@ -24,6 +24,51 @@ pub enum InstructionsPane {
     Comments,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Feeds,
+    Bookmarks,
+    Posts,
+    Comments,
+}
+
+pub fn instructions_pane_for(pane: Pane) -> InstructionsPane {
+    match pane {
+        Pane::Feeds => InstructionsPane::Feeds,
+        Pane::Bookmarks => InstructionsPane::Bookmarks,
+        Pane::Posts => InstructionsPane::Posts,
+        Pane::Comments => InstructionsPane::Comments,
+    }
+}
+
+pub fn pane_border_style(active_pane: Pane, pane: Pane) -> Style {
+    if active_pane == pane {
+        Style::new().fg(COMMENT_BORDER_COLOR)
+    } else {
+        Style::new().fg(POST_META_COLOR)
+    }
+}
+
+pub fn pane_title_with_shortcut(
+    title: impl Into<String>,
+    shortcut: char,
+    active_pane: Pane,
+    pane: Pane,
+) -> Line<'static> {
+    let title = title.into();
+    let shortcut_style = if active_pane == pane {
+        Style::default()
+    } else {
+        Style::new().fg(PANE_SHORTCUT_COLOR).bold()
+    };
+
+    Line::from(vec![
+        Span::raw(format!("{title} (")),
+        Span::styled(shortcut.to_string(), shortcut_style),
+        Span::raw(")"),
+    ])
+}
+
 pub fn instructions_line(
     active_pane: InstructionsPane,
     comments_open: bool,

@@ -1,10 +1,19 @@
 use crate::{
+    comments_nav::{
+        current_index_from_scroll, next_comment_index, next_sibling_or_outer_index,
+        previous_comment_index, previous_sibling_or_parent_index,
+    },
     event::{AppEvent, Event, EventHandler, PostsFetchMode, PostsFetchResult},
     hn::{Comment, HackerNewsApi, Item, StoryFeed},
+    input::{
+        BookmarksKeyAction, CommentsKeyAction, FeedsKeyAction, GlobalKeyAction, PostsKeyAction,
+        map_bookmarks_action, map_comments_action, map_feeds_action, map_global_action,
+        map_posts_action,
+    },
     ui::{
-        COMMENT_BORDER_COLOR, InstructionsPane, PANE_SHORTCUT_COLOR, POST_META_COLOR,
-        POST_SELECTED_COLOR, SPINNER_FRAMES, comment_lines as build_comment_lines, format_age,
-        instructions_line,
+        POST_META_COLOR, POST_SELECTED_COLOR, Pane, SPINNER_FRAMES,
+        comment_lines as build_comment_lines, format_age, instructions_line, instructions_pane_for,
+        pane_border_style, pane_title_with_shortcut,
     },
 };
 use chrono::Local;
@@ -15,7 +24,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Style, Stylize},
     symbols::border,
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, List, ListItem, ListState, Paragraph, Tabs},
 };
 use std::collections::HashMap;
@@ -41,7 +50,7 @@ pub struct App {
     pub loading: bool,
     list_state: ListState,
     bookmarks_state: ListState,
-    focus_pane: FocusPane,
+    focus_pane: Pane,
     comments_open: bool,
     comments: Vec<Comment>,
     comments_for_post_id: Option<u64>,
@@ -53,14 +62,6 @@ pub struct App {
     comment_line_count: usize,
     comment_start_lines: Vec<u16>,
     bookmarks_collapsed: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusPane {
-    Feeds,
-    Bookmarks,
-    Posts,
-    Comments,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +190,7 @@ impl App {
             loading: false,
             list_state: ListState::default(),
             bookmarks_state: ListState::default(),
-            focus_pane: FocusPane::Posts,
+            focus_pane: Pane::Posts,
             comments_open: false,
             comments: Vec::new(),
             comments_for_post_id: None,
@@ -222,7 +223,7 @@ impl App {
         let title = Line::from("lazynews".bold());
         let spinner = self.spinner_frame();
         let instructions = instructions_line(
-            self.focus_instructions_pane(),
+            instructions_pane_for(self.focus_pane),
             self.comments_open,
             self.bookmarks_visible(),
             self.bookmarks_collapsed,
@@ -274,8 +275,13 @@ impl App {
     fn render_feed_tabs(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let titles = FeedTab::ALL.iter().map(|tab| tab.label());
         let block = Block::bordered()
-            .title(self.pane_title_with_shortcut("Feeds", '3', FocusPane::Feeds))
-            .border_style(self.pane_border_style(FocusPane::Feeds));
+            .title(pane_title_with_shortcut(
+                "Feeds",
+                '3',
+                self.focus_pane,
+                Pane::Feeds,
+            ))
+            .border_style(pane_border_style(self.focus_pane, Pane::Feeds));
 
         let tabs = Tabs::new(titles)
             .block(block)
@@ -344,12 +350,13 @@ impl App {
                 .collect()
         };
 
-        let mut block = Block::bordered().title(self.pane_title_with_shortcut(
+        let mut block = Block::bordered().title(pane_title_with_shortcut(
             self.selected_feed.posts_title(),
             '2',
-            FocusPane::Posts,
+            self.focus_pane,
+            Pane::Posts,
         ));
-        block = block.border_style(self.pane_border_style(FocusPane::Posts));
+        block = block.border_style(pane_border_style(self.focus_pane, Pane::Posts));
         if let Some(last_fetched) = self.last_fetched.as_deref() {
             block = block.title(
                 Line::from(format!("last fetched {last_fetched}"))
@@ -376,9 +383,14 @@ impl App {
         };
 
         let block = Block::bordered()
-            .title(self.pane_title_with_shortcut("Bookmarks", '1', FocusPane::Bookmarks))
-            .border_style(self.pane_border_style(FocusPane::Bookmarks));
-        let is_focused = self.focus_pane == FocusPane::Bookmarks;
+            .title(pane_title_with_shortcut(
+                "Bookmarks",
+                '1',
+                self.focus_pane,
+                Pane::Bookmarks,
+            ))
+            .border_style(pane_border_style(self.focus_pane, Pane::Bookmarks));
+        let is_focused = self.focus_pane == Pane::Bookmarks;
         let list = if is_focused {
             List::new(items)
                 .block(block)
@@ -424,8 +436,13 @@ impl App {
         let widget = Paragraph::new(lines)
             .block(
                 Block::bordered()
-                    .title(self.pane_title_with_shortcut(comments_title, '4', FocusPane::Comments))
-                    .border_style(self.pane_border_style(FocusPane::Comments)),
+                    .title(pane_title_with_shortcut(
+                        comments_title,
+                        '4',
+                        self.focus_pane,
+                        Pane::Comments,
+                    ))
+                    .border_style(pane_border_style(self.focus_pane, Pane::Comments)),
             )
             .scroll((self.comments_scroll, 0));
 
@@ -433,52 +450,35 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
-        if matches!(key_event.code, KeyCode::Char('c'))
-            && key_event.modifiers.contains(KeyModifiers::CONTROL)
-        {
-            self.exit();
+        if let Some(action) = map_global_action(key_event) {
+            match action {
+                GlobalKeyAction::Exit => self.exit(),
+                GlobalKeyAction::FocusNextPane => self.focus_next_pane(),
+                GlobalKeyAction::FocusPreviousPane => self.focus_previous_pane(),
+                GlobalKeyAction::PaneShortcut(shortcut) => self.handle_pane_shortcut(shortcut),
+                GlobalKeyAction::Refresh => self.events.send(AppEvent::Refresh),
+                GlobalKeyAction::Quit => self.events.send(AppEvent::Quit),
+            }
             return Ok(());
         }
 
-        match key_event.code {
-            KeyCode::Tab => {
-                self.focus_next_pane();
-                return Ok(());
-            }
-            KeyCode::BackTab => {
-                self.focus_previous_pane();
-                return Ok(());
-            }
-            KeyCode::Char(shortcut @ '1'..='4') => {
-                self.handle_pane_shortcut(shortcut);
-                return Ok(());
-            }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.events.send(AppEvent::Refresh);
-                return Ok(());
-            }
-            KeyCode::Char('q') => {
-                self.events.send(AppEvent::Quit);
-                return Ok(());
-            }
-            _ => {}
-        }
-
         match self.focus_pane {
-            FocusPane::Feeds => self.handle_feeds_key(key_event.code),
-            FocusPane::Posts => self.handle_posts_key(key_event.code),
-            FocusPane::Comments => self.handle_comments_key(key_event.code),
-            FocusPane::Bookmarks => self.handle_bookmarks_key(key_event.code),
+            Pane::Feeds => self.handle_feeds_key(key_event.code),
+            Pane::Posts => self.handle_posts_key(key_event.code),
+            Pane::Comments => self.handle_comments_key(key_event.code),
+            Pane::Bookmarks => self.handle_bookmarks_key(key_event.code),
         }
 
         Ok(())
     }
 
     fn handle_feeds_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => self.select_previous_feed(),
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => self.select_next_feed(),
-            _ => {}
+        if let Some(action) = map_feeds_action(key_code) {
+            match action {
+                FeedsKeyAction::SelectPrevious => self.select_previous_feed(),
+                FeedsKeyAction::SelectNext => self.select_next_feed(),
+                FeedsKeyAction::FocusPosts => self.set_focus_pane(Pane::Posts),
+            }
         }
     }
 
@@ -489,7 +489,7 @@ impl App {
                     return;
                 }
 
-                if self.focus_pane == FocusPane::Bookmarks {
+                if self.focus_pane == Pane::Bookmarks {
                     if self.bookmarks_collapsed {
                         self.open_bookmarks_pane();
                     } else {
@@ -500,14 +500,14 @@ impl App {
                 }
             }
             '2' => {
-                self.set_focus_pane(FocusPane::Posts);
+                self.set_focus_pane(Pane::Posts);
             }
             '3' => {
-                self.set_focus_pane(FocusPane::Feeds);
+                self.set_focus_pane(Pane::Feeds);
             }
             '4' => {
                 if self.comments_open {
-                    self.set_focus_pane(FocusPane::Comments);
+                    self.set_focus_pane(Pane::Comments);
                 }
             }
             _ => {}
@@ -515,78 +515,58 @@ impl App {
         self.ensure_focus_valid();
     }
 
-    fn focus_instructions_pane(&self) -> InstructionsPane {
-        match self.focus_pane {
-            FocusPane::Feeds => InstructionsPane::Feeds,
-            FocusPane::Bookmarks => InstructionsPane::Bookmarks,
-            FocusPane::Posts => InstructionsPane::Posts,
-            FocusPane::Comments => InstructionsPane::Comments,
-        }
-    }
-
     fn handle_posts_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => self.select_previous(),
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                self.select_next();
-                self.load_more_posts();
+        if let Some(action) = map_posts_action(key_code, self.comments_open) {
+            match action {
+                PostsKeyAction::SelectPrevious => self.select_previous(),
+                PostsKeyAction::SelectNextAndLoadMore => {
+                    self.select_next();
+                    self.load_more_posts();
+                }
+                PostsKeyAction::BookmarkSelected => self.bookmark_selected_post(),
+                PostsKeyAction::OpenComments => self.open_comments_for_selected(),
+                PostsKeyAction::OpenPost => self.open_selected_post(),
+                PostsKeyAction::CloseComments => self.close_comments_view(),
             }
-            KeyCode::Char('b') | KeyCode::Char('B') => self.bookmark_selected_post(),
-            KeyCode::Enter => self.open_comments_for_selected(),
-            KeyCode::Char('o') | KeyCode::Char('O') => self.open_selected_post(),
-            KeyCode::Esc if self.comments_open => self.close_comments_view(),
-            _ => {}
         }
     }
 
     fn handle_comments_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Esc => self.close_comments_view(),
-            KeyCode::Char('b') | KeyCode::Char('B') => self.bookmark_comments_post(),
-            KeyCode::Char('o') | KeyCode::Char('O') => self.open_comments_post(),
-            KeyCode::Up => self.jump_to_previous_comment(),
-            KeyCode::Down => self.jump_to_next_comment(),
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
-                self.jump_to_previous_sibling_comment()
+        if let Some(action) = map_comments_action(key_code) {
+            match action {
+                CommentsKeyAction::Close => self.close_comments_view(),
+                CommentsKeyAction::BookmarkPost => self.bookmark_comments_post(),
+                CommentsKeyAction::OpenPost => self.open_comments_post(),
+                CommentsKeyAction::JumpPrevious => self.jump_to_previous_comment(),
+                CommentsKeyAction::JumpNext => self.jump_to_next_comment(),
+                CommentsKeyAction::JumpPreviousSibling => self.jump_to_previous_sibling_comment(),
+                CommentsKeyAction::JumpNextSibling => self.jump_to_next_sibling_comment(),
+                CommentsKeyAction::ScrollUp => self.scroll_comments_up(1),
+                CommentsKeyAction::ScrollDown => self.scroll_comments_down(1),
+                CommentsKeyAction::ScrollPageUp => {
+                    self.scroll_comments_up(self.comment_page_step())
+                }
+                CommentsKeyAction::ScrollPageDown => {
+                    self.scroll_comments_down(self.comment_page_step())
+                }
+                CommentsKeyAction::ScrollHome => self.comments_scroll = 0,
+                CommentsKeyAction::ScrollEnd => self.comments_scroll = self.max_comment_scroll(),
             }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
-                self.jump_to_next_sibling_comment()
-            }
-            KeyCode::Char('k') | KeyCode::Char('K') => self.scroll_comments_up(1),
-            KeyCode::Char('j') | KeyCode::Char('J') => self.scroll_comments_down(1),
-            KeyCode::PageUp => self.scroll_comments_up(self.comment_page_step()),
-            KeyCode::PageDown => self.scroll_comments_down(self.comment_page_step()),
-            KeyCode::Home => self.comments_scroll = 0,
-            KeyCode::End => self.comments_scroll = self.max_comment_scroll(),
-            _ => {}
         }
     }
 
     fn handle_bookmarks_key(&mut self, key_code: KeyCode) {
-        if self.bookmarks_collapsed {
-            match key_code {
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
-                    self.open_bookmarks_pane()
-                }
-                KeyCode::Esc => self.close_bookmarks_pane(),
-                _ => {}
+        if let Some(action) = map_bookmarks_action(key_code, self.bookmarks_collapsed) {
+            match action {
+                BookmarksKeyAction::Expand => self.open_bookmarks_pane(),
+                BookmarksKeyAction::Close => self.close_bookmarks_pane(),
+                BookmarksKeyAction::BookmarkSelected => self.bookmark_selected_post(),
+                BookmarksKeyAction::SelectPrevious => self.select_previous_bookmark(),
+                BookmarksKeyAction::SelectNext => self.select_next_bookmark(),
+                BookmarksKeyAction::OpenComments => self.select_post_from_bookmark(),
+                BookmarksKeyAction::OpenPost => self.open_selected_bookmark(),
+                BookmarksKeyAction::Delete => self.remove_selected_bookmark(),
             }
-            return;
-        }
-
-        match key_code {
-            KeyCode::Char('b') | KeyCode::Char('B') => self.bookmark_selected_post(),
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                self.select_previous_bookmark()
-            }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => self.select_next_bookmark(),
-            KeyCode::Enter => self.select_post_from_bookmark(),
-            KeyCode::Char('o') | KeyCode::Char('O') => self.open_selected_bookmark(),
-            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete | KeyCode::Backspace => {
-                self.remove_selected_bookmark()
-            }
-            KeyCode::Esc => self.close_bookmarks_pane(),
-            _ => {}
         }
     }
 
@@ -1041,7 +1021,7 @@ impl App {
             return;
         };
 
-        self.set_focus_pane(FocusPane::Comments);
+        self.set_focus_pane(Pane::Comments);
         self.comments_open = true;
         self.comments_scroll = 0;
         self.comments_viewport_height = 0;
@@ -1051,7 +1031,7 @@ impl App {
     }
 
     fn close_comments_view(&mut self) {
-        self.set_focus_pane(FocusPane::Posts);
+        self.set_focus_pane(Pane::Posts);
         self.reset_comments_state();
     }
 
@@ -1119,94 +1099,60 @@ impl App {
     }
 
     fn jump_to_next_sibling_comment(&mut self) {
-        let Some(current_index) = self.current_comment_index_from_scroll() else {
+        let Some(current_index) = current_index_from_scroll(
+            &self.comment_start_lines,
+            self.comments.len(),
+            self.comments_scroll,
+        ) else {
             return;
         };
 
-        let current_depth = self.comments[current_index].depth;
-
-        for next_index in (current_index + 1)..self.comments.len() {
-            let depth = self.comments[next_index].depth;
-            if depth == current_depth {
-                self.jump_to_comment(next_index);
-                return;
-            }
-            if depth < current_depth {
-                self.jump_to_comment(next_index);
-                return;
-            }
+        if let Some(next_index) = next_sibling_or_outer_index(&self.comments, current_index) {
+            self.jump_to_comment(next_index);
         }
     }
 
     fn jump_to_previous_sibling_comment(&mut self) {
-        let Some(current_index) = self.current_comment_index_from_scroll() else {
+        let Some(current_index) = current_index_from_scroll(
+            &self.comment_start_lines,
+            self.comments.len(),
+            self.comments_scroll,
+        ) else {
             return;
         };
 
-        let current_depth = self.comments[current_index].depth;
-
-        for prev_index in (0..current_index).rev() {
-            let depth = self.comments[prev_index].depth;
-            if depth < current_depth {
-                break;
-            }
-
-            if depth == current_depth {
-                self.jump_to_comment(prev_index);
-                return;
-            }
-        }
-
-        if let Some(parent_index) = self.nearest_parent_comment_index(current_index) {
+        if let Some(parent_index) = previous_sibling_or_parent_index(&self.comments, current_index)
+        {
             self.jump_to_comment(parent_index);
         }
     }
 
     fn jump_to_next_comment(&mut self) {
-        let Some(current_index) = self.current_comment_index_from_scroll() else {
+        let Some(current_index) = current_index_from_scroll(
+            &self.comment_start_lines,
+            self.comments.len(),
+            self.comments_scroll,
+        ) else {
             return;
         };
 
-        if current_index + 1 < self.comments.len() {
-            self.jump_to_comment(current_index + 1);
+        if let Some(next_index) = next_comment_index(self.comments.len(), current_index) {
+            self.jump_to_comment(next_index);
         }
     }
 
     fn jump_to_previous_comment(&mut self) {
-        let Some(current_index) = self.current_comment_index_from_scroll() else {
+        let Some(current_index) = current_index_from_scroll(
+            &self.comment_start_lines,
+            self.comments.len(),
+            self.comments_scroll,
+        ) else {
             return;
         };
 
-        if current_index > 0 {
-            self.jump_to_comment(current_index - 1);
+        if let Some(prev_index) = previous_comment_index(current_index) {
+            self.jump_to_comment(prev_index);
         }
-    }
-
-    fn nearest_parent_comment_index(&self, current_index: usize) -> Option<usize> {
-        let current_depth = self.comments.get(current_index)?.depth;
-        if current_depth == 0 {
-            return None;
-        }
-
-        (0..current_index)
-            .rev()
-            .find(|&index| self.comments[index].depth < current_depth)
-    }
-
-    fn current_comment_index_from_scroll(&self) -> Option<usize> {
-        if self.comments.is_empty() || self.comment_start_lines.is_empty() {
-            return None;
-        }
-
-        let mut current = 0usize;
-        for (index, line) in self.comment_start_lines.iter().enumerate() {
-            if *line > self.comments_scroll {
-                break;
-            }
-            current = index;
-        }
-
-        Some(current)
     }
 
     fn jump_to_comment(&mut self, index: usize) {
@@ -1233,11 +1179,11 @@ impl App {
 
     fn close_bookmarks_pane(&mut self) {
         if self.bookmarks.is_empty() {
-            self.set_focus_pane(FocusPane::Posts);
+            self.set_focus_pane(Pane::Posts);
             return;
         }
         self.bookmarks_collapsed = true;
-        self.set_focus_pane(FocusPane::Posts);
+        self.set_focus_pane(Pane::Posts);
     }
 
     fn open_bookmarks_pane(&mut self) {
@@ -1245,36 +1191,8 @@ impl App {
             return;
         }
         self.bookmarks_collapsed = false;
-        self.set_focus_pane(FocusPane::Bookmarks);
+        self.set_focus_pane(Pane::Bookmarks);
         self.ensure_bookmarks_selection();
-    }
-
-    fn pane_border_style(&self, pane: FocusPane) -> Style {
-        if self.focus_pane == pane {
-            Style::new().fg(COMMENT_BORDER_COLOR)
-        } else {
-            Style::new().fg(POST_META_COLOR)
-        }
-    }
-
-    fn pane_title_with_shortcut(
-        &self,
-        title: impl Into<String>,
-        shortcut: char,
-        pane: FocusPane,
-    ) -> Line<'static> {
-        let title = title.into();
-        let shortcut_style = if self.focus_pane == pane {
-            Style::default()
-        } else {
-            Style::new().fg(PANE_SHORTCUT_COLOR).bold()
-        };
-
-        Line::from(vec![
-            Span::raw(format!("{title} (")),
-            Span::styled(shortcut.to_string(), shortcut_style),
-            Span::raw(")"),
-        ])
     }
 
     fn focus_next_pane(&mut self) {
@@ -1300,15 +1218,15 @@ impl App {
         self.set_focus_pane(panes[next_index as usize]);
     }
 
-    fn visible_panes(&self) -> Vec<FocusPane> {
+    fn visible_panes(&self) -> Vec<Pane> {
         let mut panes = Vec::with_capacity(4);
-        panes.push(FocusPane::Feeds);
+        panes.push(Pane::Feeds);
         if self.bookmarks_visible() {
-            panes.push(FocusPane::Bookmarks);
+            panes.push(Pane::Bookmarks);
         }
-        panes.push(FocusPane::Posts);
+        panes.push(Pane::Posts);
         if self.comments_open {
-            panes.push(FocusPane::Comments);
+            panes.push(Pane::Comments);
         }
         panes
     }
@@ -1316,12 +1234,12 @@ impl App {
     fn ensure_focus_valid(&mut self) {
         let panes = self.visible_panes();
         if panes.is_empty() {
-            self.focus_pane = FocusPane::Posts;
+            self.focus_pane = Pane::Posts;
             return;
         }
 
         if !panes.contains(&self.focus_pane) {
-            self.focus_pane = FocusPane::Posts;
+            self.focus_pane = Pane::Posts;
         }
 
         self.ensure_bookmarks_selection();
@@ -1331,8 +1249,8 @@ impl App {
         if self.bookmarks.is_empty() {
             self.bookmarks_state.select(None);
             self.bookmarks_collapsed = false;
-            if self.focus_pane == FocusPane::Bookmarks {
-                self.focus_pane = FocusPane::Posts;
+            if self.focus_pane == Pane::Bookmarks {
+                self.focus_pane = Pane::Posts;
             }
             return;
         }
@@ -1385,8 +1303,8 @@ impl App {
         if self.bookmarks.is_empty() {
             self.bookmarks_state.select(None);
             self.bookmarks_collapsed = false;
-            if self.focus_pane == FocusPane::Bookmarks {
-                self.focus_pane = FocusPane::Posts;
+            if self.focus_pane == Pane::Bookmarks {
+                self.focus_pane = Pane::Posts;
             }
             return;
         }
@@ -1395,15 +1313,13 @@ impl App {
         self.bookmarks_state.select(Some(next_selected));
     }
 
-    fn set_focus_pane(&mut self, pane: FocusPane) {
-        if self.focus_pane == FocusPane::Bookmarks
-            && pane != FocusPane::Bookmarks
-            && self.bookmarks_visible()
+    fn set_focus_pane(&mut self, pane: Pane) {
+        if self.focus_pane == Pane::Bookmarks && pane != Pane::Bookmarks && self.bookmarks_visible()
         {
             self.bookmarks_collapsed = true;
         }
         self.focus_pane = pane;
-        if pane == FocusPane::Bookmarks && self.bookmarks_visible() {
+        if pane == Pane::Bookmarks && self.bookmarks_visible() {
             self.bookmarks_collapsed = false;
             self.ensure_bookmarks_selection();
         }
@@ -1533,19 +1449,19 @@ mod tests {
     async fn focus_cycles_between_comments_posts_bookmarks_and_feeds() {
         let mut app = App::new();
         app.comments_open = true;
-        app.focus_pane = FocusPane::Comments;
+        app.focus_pane = Pane::Comments;
         app.posts = vec![sample_post(1, "first")];
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
 
         app.focus_previous_pane();
-        assert_eq!(app.focus_pane, FocusPane::Posts);
+        assert_eq!(app.focus_pane, Pane::Posts);
 
         app.focus_previous_pane();
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
 
         app.focus_previous_pane();
-        assert_eq!(app.focus_pane, FocusPane::Feeds);
+        assert_eq!(app.focus_pane, Pane::Feeds);
     }
 
     #[tokio::test]
@@ -1567,7 +1483,7 @@ mod tests {
         app.posts = vec![sample_post(1, "first"), sample_post(2, "second")];
         app.comments_open = true;
         app.comments_for_post_id = Some(1);
-        app.focus_pane = FocusPane::Comments;
+        app.focus_pane = Pane::Comments;
         app.list_state.select(Some(1));
 
         app.handle_comments_key(KeyCode::Char('b'));
@@ -1592,34 +1508,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enter_in_feeds_pane_moves_focus_to_posts() {
+        let mut app = App::new();
+        app.focus_pane = Pane::Feeds;
+
+        app.handle_feeds_key(KeyCode::Enter);
+
+        assert_eq!(app.focus_pane, Pane::Posts);
+    }
+
+    #[tokio::test]
     async fn pane_shortcuts_focus_panes() {
         let mut app = App::new();
-        app.focus_pane = FocusPane::Feeds;
+        app.focus_pane = Pane::Feeds;
         app.comments_open = true;
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
             .expect("pane key should be handled");
-        assert_eq!(app.focus_pane, FocusPane::Posts);
+        assert_eq!(app.focus_pane, Pane::Posts);
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE))
             .expect("pane key should be handled");
-        assert_eq!(app.focus_pane, FocusPane::Feeds);
+        assert_eq!(app.focus_pane, Pane::Feeds);
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
             .expect("pane key should be handled");
-        assert_eq!(app.focus_pane, FocusPane::Comments);
+        assert_eq!(app.focus_pane, Pane::Comments);
     }
 
     #[tokio::test]
     async fn feed_switch_refresh_keeps_feeds_focus() {
         let mut app = App::new();
-        app.focus_pane = FocusPane::Feeds;
+        app.focus_pane = Pane::Feeds;
 
         app.handle_feeds_key(KeyCode::Right);
         app.handle_app_event(AppEvent::Refresh);
 
         assert_eq!(app.selected_feed, FeedTab::New);
-        assert_eq!(app.focus_pane, FocusPane::Feeds);
+        assert_eq!(app.focus_pane, Pane::Feeds);
     }
 
     #[tokio::test]
@@ -1628,18 +1554,18 @@ mod tests {
         app.posts = vec![sample_post(1, "first")];
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
-        app.focus_pane = FocusPane::Bookmarks;
+        app.focus_pane = Pane::Bookmarks;
         app.bookmarks_collapsed = false;
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE))
             .expect("pane key should be handled");
         assert!(app.bookmarks_collapsed);
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE))
             .expect("pane key should be handled");
         assert!(!app.bookmarks_collapsed);
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
     }
 
     #[tokio::test]
@@ -1650,13 +1576,13 @@ mod tests {
         app.bookmark_selected_post();
         app.open_bookmarks_pane();
 
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
         assert!(!app.bookmarks_collapsed);
 
         app.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
             .expect("pane key should be handled");
 
-        assert_eq!(app.focus_pane, FocusPane::Posts);
+        assert_eq!(app.focus_pane, Pane::Posts);
         assert!(app.bookmarks_collapsed);
     }
 
@@ -1666,13 +1592,13 @@ mod tests {
         app.posts = vec![sample_post(1, "first")];
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
-        app.focus_pane = FocusPane::Posts;
+        app.focus_pane = Pane::Posts;
         app.bookmarks_collapsed = true;
 
         app.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
             .expect("pane key should be handled");
 
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
         assert!(!app.bookmarks_collapsed);
     }
 
@@ -1684,7 +1610,7 @@ mod tests {
         app.bookmark_selected_post();
         app.list_state.select(Some(1));
         app.bookmark_selected_post();
-        app.focus_pane = FocusPane::Bookmarks;
+        app.focus_pane = Pane::Bookmarks;
         app.bookmarks_collapsed = false;
         app.bookmarks_state.select(Some(0));
 
@@ -1692,12 +1618,12 @@ mod tests {
         assert_eq!(app.bookmarks.len(), 1);
         assert_eq!(app.bookmarks[0].id, 2);
         assert_eq!(app.bookmarks_state.selected(), Some(0));
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
 
         app.handle_bookmarks_key(KeyCode::Char('d'));
         assert!(app.bookmarks.is_empty());
         assert!(!app.bookmarks_visible());
-        assert_eq!(app.focus_pane, FocusPane::Posts);
+        assert_eq!(app.focus_pane, Pane::Posts);
     }
 
     #[tokio::test]
@@ -1706,14 +1632,14 @@ mod tests {
         app.posts = vec![sample_post(1, "first")];
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
-        app.focus_pane = FocusPane::Bookmarks;
+        app.focus_pane = Pane::Bookmarks;
         app.bookmarks_collapsed = false;
         app.bookmarks_state.select(Some(0));
 
         app.handle_bookmarks_key(KeyCode::Enter);
         assert!(app.comments_open);
         assert_eq!(app.comments_for_post_id, Some(1));
-        assert_eq!(app.focus_pane, FocusPane::Comments);
+        assert_eq!(app.focus_pane, Pane::Comments);
     }
 
     #[tokio::test]
@@ -1722,13 +1648,13 @@ mod tests {
         app.posts = vec![sample_post(1, "first")];
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
-        app.focus_pane = FocusPane::Bookmarks;
+        app.focus_pane = Pane::Bookmarks;
 
         app.handle_bookmarks_key(KeyCode::Esc);
 
         assert!(app.bookmarks_visible());
         assert!(app.bookmarks_collapsed);
-        assert_eq!(app.focus_pane, FocusPane::Posts);
+        assert_eq!(app.focus_pane, Pane::Posts);
     }
 
     #[tokio::test]
@@ -1738,11 +1664,11 @@ mod tests {
         app.list_state.select(Some(0));
         app.bookmark_selected_post();
         app.bookmarks_collapsed = true;
-        app.focus_pane = FocusPane::Bookmarks;
+        app.focus_pane = Pane::Bookmarks;
 
         app.handle_bookmarks_key(KeyCode::Enter);
 
         assert!(!app.bookmarks_collapsed);
-        assert_eq!(app.focus_pane, FocusPane::Bookmarks);
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
     }
 }
