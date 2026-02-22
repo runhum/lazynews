@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 pub const POST_SELECTED_COLOR: Color = Color::Rgb(255, 149, 0);
+pub const PANE_SHORTCUT_COLOR: Color = POST_SELECTED_COLOR;
 pub const POST_META_COLOR: Color = Color::Rgb(140, 140, 140);
 pub const COMMENT_AUTHOR_COLOR: Color = Color::Rgb(255, 149, 0);
 pub const COMMENT_TEXT_COLOR: Color = Color::Rgb(225, 225, 225);
@@ -15,51 +16,102 @@ pub const COMMENT_INDENT_COLOR: Color = Color::Rgb(90, 90, 90);
 pub const COMMENT_BORDER_COLOR: Color = Color::Rgb(255, 149, 0);
 pub const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
-pub fn instructions_line(comments_open: bool, loading: bool, spinner: &str) -> Line<'static> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionsPane {
+    Feeds,
+    Bookmarks,
+    Posts,
+    Comments,
+}
+
+pub fn instructions_line(
+    active_pane: InstructionsPane,
+    comments_open: bool,
+    bookmarks_visible: bool,
+    bookmarks_collapsed: bool,
+    loading: bool,
+    spinner: &str,
+) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
     let key =
         |label: &'static str| Span::styled(label, Style::new().fg(POST_SELECTED_COLOR).bold());
 
-    if comments_open {
-        spans.extend([
-            "Comment ".into(),
-            key("<Up/Down>"),
-            " Sibling ".into(),
-            key("<Left/Right>"),
-            " Scroll ".into(),
-            key("<J/K>"),
-            " Open ".into(),
-            key("<O>"),
-            " Close ".into(),
-            key("<Esc>"),
+    spans.extend(["Pane ".into(), key("<Tab/Shift-Tab>"), " ".into()]);
+
+    match active_pane {
+        InstructionsPane::Feeds => spans.extend([
+            "Switch feed ".into(),
+            key("<Left/Right/H/L>"),
             " Quit ".into(),
             key("<Q> "),
-        ]);
-    } else {
-        if loading {
+        ]),
+        InstructionsPane::Posts => {
+            if loading {
+                spans.extend([
+                    "Refreshing ".yellow().bold(),
+                    Span::styled(spinner.to_string(), Style::new().yellow().bold()),
+                    " ".into(),
+                ]);
+            } else {
+                spans.extend(["Refresh ".into(), key("<R>"), " ".into()]);
+            }
             spans.extend([
-                "Refreshing ".yellow().bold(),
-                Span::styled(spinner.to_string(), Style::new().yellow().bold()),
-                " ".into(),
+                "Move ".into(),
+                key("<Up/Down/J/K>"),
+                " Bookmark ".into(),
+                key("<B>"),
+                " Comments ".into(),
+                key("<Enter>"),
+                " Open ".into(),
+                key("<O>"),
             ]);
-        } else {
-            spans.extend(["Refresh ".into(), key("<R>"), " ".into()]);
+            if comments_open {
+                spans.extend([" Close comments ".into(), key("<Esc>")]);
+            }
+            spans.extend([" Quit ".into(), key("<Q> ")]);
         }
-        spans.extend([
-            "Feed ".into(),
-            key("<Left/Right>"),
-            " ".into(),
-            key("<1-6>"),
-            " ".into(),
-            "Move ".into(),
-            key("<Up/Down>"),
-            " Comments ".into(),
-            key("<Enter>"),
-            " Open ".into(),
-            key("<O>"),
-            " Quit ".into(),
-            key("<Q> "),
-        ]);
+        InstructionsPane::Bookmarks => {
+            if bookmarks_collapsed {
+                spans.extend([
+                    "Expand ".into(),
+                    key("<Enter/Right/L>"),
+                    " Close ".into(),
+                    key("<Esc>"),
+                ]);
+            } else {
+                spans.extend([
+                    "Move ".into(),
+                    key("<Up/Down/J/K>"),
+                    " Comments ".into(),
+                    key("<Enter>"),
+                    " Open ".into(),
+                    key("<O>"),
+                    " Delete ".into(),
+                    key("<D/Del/Bksp>"),
+                    " Close ".into(),
+                    key("<Esc>"),
+                ]);
+            }
+            spans.extend([" Quit ".into(), key("<Q> ")]);
+        }
+        InstructionsPane::Comments => {
+            spans.extend([
+                "Navigate ".into(),
+                key("<Up/Down/Left/Right>"),
+                " Bookmark ".into(),
+                key("<B>"),
+                " Open ".into(),
+                key("<O>"),
+                " Close ".into(),
+                key("<Esc>"),
+                " Quit ".into(),
+                key("<Q> "),
+            ]);
+        }
+    }
+
+    if matches!(active_pane, InstructionsPane::Bookmarks) && !bookmarks_visible {
+        spans.extend([" ".into(), "(No bookmarks yet)".into()]);
     }
 
     Line::from(spans)
@@ -332,6 +384,12 @@ mod tests {
     }
 
     #[test]
+    fn wrap_text_splits_unicode_words_without_panicking() {
+        let wrapped = wrap_text("åäö🙂🙂", 2);
+        assert_eq!(wrapped, vec!["åä", "ö🙂", "🙂"]);
+    }
+
+    #[test]
     fn wrap_text_returns_blank_for_zero_width() {
         let wrapped = wrap_text("alpha beta", 0);
         assert_eq!(wrapped, vec![String::new()]);
@@ -391,5 +449,51 @@ mod tests {
     #[test]
     fn format_age_returns_dash_for_zero_timestamp() {
         assert_eq!(format_age(0), "-");
+    }
+
+    #[test]
+    fn instructions_show_tab_navigation_and_hide_numeric_shortcuts() {
+        let panes = [
+            InstructionsPane::Feeds,
+            InstructionsPane::Bookmarks,
+            InstructionsPane::Posts,
+            InstructionsPane::Comments,
+        ];
+
+        for pane in panes {
+            let line = instructions_line(pane, true, true, false, false, "|");
+            let text = as_text(&line);
+
+            assert!(text.contains("Pane"));
+            assert!(text.contains("<Tab/Shift-Tab>"));
+            assert!(!text.contains("<1>"));
+            assert!(!text.contains("<2>"));
+            assert!(!text.contains("<3>"));
+            assert!(!text.contains("<4>"));
+        }
+    }
+
+    #[test]
+    fn refresh_hint_shows_only_in_posts_pane() {
+        let line = instructions_line(InstructionsPane::Posts, false, false, false, false, "|");
+        let text = as_text(&line);
+        assert!(text.contains("Refresh"));
+        assert!(text.contains("<R>"));
+
+        let line = instructions_line(InstructionsPane::Feeds, false, false, false, false, "|");
+        let text = as_text(&line);
+        assert!(!text.contains("Refresh"));
+        assert!(!text.contains("<R>"));
+    }
+
+    #[test]
+    fn collapsed_bookmarks_instructions_only_show_collapsed_actions() {
+        let line = instructions_line(InstructionsPane::Bookmarks, true, true, true, false, "|");
+        let text = as_text(&line);
+
+        assert!(text.contains("<Enter/Right/L>"));
+        assert!(text.contains("<Esc>"));
+        assert!(!text.contains("<Up/Down/J/K>"));
+        assert!(!text.contains("<D/Del/Bksp>"));
     }
 }

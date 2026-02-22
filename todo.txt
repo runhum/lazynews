@@ -1,15 +1,10 @@
-- Bookmarking/read later
-    - Open all bookmarks keybinding
-    - Clear on exit
+- Open all bookmarks key
+- Cache comments
 - Update in background
     - Notify user of update
-- Tabs for new, past, comments etc
 - Search
+- Read state
+- Scrolling with mouse
 - Other news sources
     - Show list to toggle on/off
     - Header with category (tech, politics, etc)
-- Read state
-- Cache
-- Keep position after refresh
-- Scrolling with mouse
-- Open comment links?
