@@ -180,7 +180,7 @@ pub fn comment_lines(
         );
     }
 
-    if comments_loading {
+    if comments_loading && comments.is_empty() {
         return (
             vec![Line::from(format!("Loading comments {spinner}"))],
             Vec::new(),
@@ -472,6 +472,22 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(as_text(&lines[0]), "No comments found.");
         assert!(starts.is_empty());
+    }
+
+    #[test]
+    fn comment_lines_renders_cached_comments_while_refreshing() {
+        let comments = vec![sample_comment("alice", "cached text", 0, vec![], true)];
+        let (lines, starts) = comment_lines("|", 40, Some(1), true, None, None, &comments);
+        let rendered: Vec<String> = lines.iter().map(as_text).collect();
+
+        assert_eq!(starts, vec![0]);
+        assert!(rendered.iter().any(|line| line.contains("alice")));
+        assert!(rendered.iter().any(|line| line.contains("cached text")));
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("Loading comments"))
+        );
     }
 
     #[test]

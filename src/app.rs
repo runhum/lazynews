@@ -27,7 +27,10 @@ use ratatui::{
     text::Line,
     widgets::{Block, List, ListItem, ListState, Paragraph, Tabs},
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use tokio_util::sync::CancellationToken;
 
 pub struct App {
@@ -61,6 +64,7 @@ pub struct App {
     comments_viewport_height: usize,
     comment_line_count: usize,
     comment_start_lines: Vec<u16>,
+    comments_cache: HashMap<u64, CachedComments>,
     bookmarks_collapsed: bool,
 }
 
@@ -110,6 +114,12 @@ struct CachedFeed {
     posts: Vec<Post>,
     selected_index: Option<usize>,
     last_fetched: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedComments {
+    comments: Vec<Comment>,
+    fetched_at: Instant,
 }
 
 impl FeedTab {
@@ -167,6 +177,7 @@ impl FeedTab {
 const POSTS_PAGE_SIZE: usize = 30;
 const LOAD_MORE_TRIGGER_NUMERATOR: usize = 3;
 const LOAD_MORE_TRIGGER_DENOMINATOR: usize = 4;
+const COMMENTS_CACHE_REFRESH_AFTER_SECS: u64 = 90;
 
 impl App {
     pub fn new() -> Self {
@@ -201,6 +212,7 @@ impl App {
             comments_viewport_height: 0,
             comment_line_count: 0,
             comment_start_lines: Vec::new(),
+            comments_cache: HashMap::new(),
             bookmarks_collapsed: false,
         }
     }
@@ -594,6 +606,13 @@ impl App {
                 self.comments_loading = false;
                 match result {
                     Ok(comments) => {
+                        self.comments_cache.insert(
+                            post_id,
+                            CachedComments {
+                                comments: comments.clone(),
+                                fetched_at: Instant::now(),
+                            },
+                        );
                         self.comments = comments;
                         self.comments_error = None;
                         self.comments_notice = None;
@@ -601,10 +620,14 @@ impl App {
                         self.comment_start_lines.clear();
                     }
                     Err(err) => {
-                        self.comments.clear();
-                        self.comments_error = Some(err);
-                        self.comments_notice = None;
-                        self.comment_start_lines.clear();
+                        if self.comments_cache.contains_key(&post_id) {
+                            self.comments_error = None;
+                        } else {
+                            self.comments.clear();
+                            self.comments_error = Some(err);
+                            self.comments_notice = None;
+                            self.comment_start_lines.clear();
+                        }
                     }
                 }
             }
@@ -1063,12 +1086,24 @@ impl App {
         self.comments_for_post_id = Some(post_id);
         self.comments_error = None;
         self.comments_notice = None;
-        self.comments.clear();
         self.comments_loading = false;
         self.comment_start_lines.clear();
 
         if post_type == PostType::Job {
+            self.comments.clear();
             self.comments_notice = Some("Jobs do not have comment threads.".to_string());
+            return;
+        }
+
+        let should_refresh = if let Some(cached) = self.comments_cache.get(&post_id) {
+            self.comments = cached.comments.clone();
+            cached.fetched_at.elapsed() >= Duration::from_secs(COMMENTS_CACHE_REFRESH_AFTER_SECS)
+        } else {
+            self.comments.clear();
+            true
+        };
+
+        if !should_refresh {
             return;
         }
 
@@ -1340,6 +1375,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn base_item(id: u64) -> Item {
         Item {
@@ -1427,6 +1463,17 @@ mod tests {
         }
     }
 
+    fn sample_comment(author: &str, text: &str) -> Comment {
+        Comment {
+            author: author.to_string(),
+            text: text.to_string(),
+            published_at: 0,
+            depth: 0,
+            ancestor_has_next_sibling: Vec::new(),
+            is_last_sibling: true,
+        }
+    }
+
     #[tokio::test]
     async fn bookmark_selected_post_adds_once_per_post_id() {
         let mut app = App::new();
@@ -1501,6 +1548,78 @@ mod tests {
 
         assert_eq!(app.bookmarks.len(), 1);
         assert_eq!(app.bookmarks[0].id, 1);
+    }
+
+    #[tokio::test]
+    async fn opening_comments_uses_fresh_cache_without_fetch() {
+        let mut app = App::new();
+        app.posts = vec![sample_post(1, "first")];
+        app.list_state.select(Some(0));
+        app.comments_cache.insert(
+            1,
+            CachedComments {
+                comments: vec![sample_comment("alice", "cached")],
+                fetched_at: Instant::now(),
+            },
+        );
+
+        app.open_comments_for_selected();
+
+        assert!(app.comments_open);
+        assert_eq!(app.comments_for_post_id, Some(1));
+        assert!(!app.comments_loading);
+        assert_eq!(app.comments.len(), 1);
+        assert_eq!(app.comments[0].text, "cached");
+    }
+
+    #[tokio::test]
+    async fn opening_comments_with_stale_cache_keeps_comments_and_refreshes() {
+        let mut app = App::new();
+        app.posts = vec![sample_post(1, "first")];
+        app.list_state.select(Some(0));
+        app.comments_cache.insert(
+            1,
+            CachedComments {
+                comments: vec![sample_comment("alice", "cached")],
+                fetched_at: Instant::now()
+                    - Duration::from_secs(COMMENTS_CACHE_REFRESH_AFTER_SECS + 1),
+            },
+        );
+
+        app.open_comments_for_selected();
+
+        assert!(app.comments_open);
+        assert_eq!(app.comments_for_post_id, Some(1));
+        assert!(app.comments_loading);
+        assert_eq!(app.comments.len(), 1);
+        assert_eq!(app.comments[0].text, "cached");
+    }
+
+    #[tokio::test]
+    async fn failed_comments_refresh_keeps_cached_comments_visible() {
+        let mut app = App::new();
+        app.comments_open = true;
+        app.comments_for_post_id = Some(1);
+        app.comments_loading = true;
+        app.comments = vec![sample_comment("alice", "cached")];
+        app.comments_cache.insert(
+            1,
+            CachedComments {
+                comments: vec![sample_comment("alice", "cached")],
+                fetched_at: Instant::now()
+                    - Duration::from_secs(COMMENTS_CACHE_REFRESH_AFTER_SECS + 1),
+            },
+        );
+
+        app.handle_app_event(AppEvent::LoadCommentsComplete {
+            post_id: 1,
+            result: Err("network down".to_string()),
+        });
+
+        assert!(!app.comments_loading);
+        assert_eq!(app.comments.len(), 1);
+        assert_eq!(app.comments[0].text, "cached");
+        assert!(app.comments_error.is_none());
     }
 
     #[tokio::test]

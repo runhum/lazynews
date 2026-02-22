@@ -33,7 +33,7 @@ pub struct Item {
     pub deleted: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Comment {
     pub author: String,
     pub text: String,
