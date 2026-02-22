@@ -131,6 +131,8 @@ pub fn instructions_line(
                     key("<Enter>"),
                     " Open ".into(),
                     key("<O>"),
+                    " Open all ".into(),
+                    key("<A>"),
                     " Delete ".into(),
                     key("<D/Del/Bksp>"),
                     " Close ".into(),
@@ -540,5 +542,14 @@ mod tests {
         assert!(text.contains("<Esc>"));
         assert!(!text.contains("<Up/Down/J/K>"));
         assert!(!text.contains("<D/Del/Bksp>"));
+    }
+
+    #[test]
+    fn expanded_bookmarks_instructions_include_open_all() {
+        let line = instructions_line(InstructionsPane::Bookmarks, true, true, false, false, "|");
+        let text = as_text(&line);
+
+        assert!(text.contains("<A>"));
+        assert!(text.contains("Open all"));
     }
 }

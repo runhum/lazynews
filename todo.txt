@@ -1,4 +1,3 @@
-- Open all bookmarks key
 - Cache comments
 - Update in background
     - Notify user of update

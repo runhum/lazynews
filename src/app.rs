@@ -565,6 +565,7 @@ impl App {
                 BookmarksKeyAction::SelectNext => self.select_next_bookmark(),
                 BookmarksKeyAction::OpenComments => self.select_post_from_bookmark(),
                 BookmarksKeyAction::OpenPost => self.open_selected_bookmark(),
+                BookmarksKeyAction::OpenAll => self.open_all_bookmarks(),
                 BookmarksKeyAction::Delete => self.remove_selected_bookmark(),
             }
         }
@@ -987,6 +988,16 @@ impl App {
             return;
         };
         self.events.send(AppEvent::OpenPost(bookmark.url.clone()));
+    }
+
+    fn open_all_bookmarks(&mut self) {
+        if self.bookmarks.is_empty() {
+            return;
+        }
+
+        for bookmark in &self.bookmarks {
+            self.events.send(AppEvent::OpenPost(bookmark.url.clone()));
+        }
     }
 
     fn select_post_from_bookmark(&mut self) {
@@ -1624,6 +1635,26 @@ mod tests {
         assert!(app.bookmarks.is_empty());
         assert!(!app.bookmarks_visible());
         assert_eq!(app.focus_pane, Pane::Posts);
+    }
+
+    #[tokio::test]
+    async fn opening_all_bookmarks_keeps_bookmark_state() {
+        let mut app = App::new();
+        app.posts = vec![sample_post(1, "first"), sample_post(2, "second")];
+        app.list_state.select(Some(0));
+        app.bookmark_selected_post();
+        app.list_state.select(Some(1));
+        app.bookmark_selected_post();
+        app.focus_pane = Pane::Bookmarks;
+        app.bookmarks_collapsed = false;
+        app.bookmarks_state.select(Some(1));
+
+        app.handle_bookmarks_key(KeyCode::Char('a'));
+
+        assert_eq!(app.bookmarks.len(), 2);
+        assert_eq!(app.bookmarks_state.selected(), Some(1));
+        assert_eq!(app.focus_pane, Pane::Bookmarks);
+        assert!(!app.bookmarks_collapsed);
     }
 
     #[tokio::test]

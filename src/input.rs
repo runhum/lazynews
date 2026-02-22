@@ -53,6 +53,7 @@ pub enum BookmarksKeyAction {
     SelectNext,
     OpenComments,
     OpenPost,
+    OpenAll,
     Delete,
 }
 
@@ -149,6 +150,7 @@ pub fn map_bookmarks_action(
         }
         KeyCode::Enter => Some(BookmarksKeyAction::OpenComments),
         KeyCode::Char('o') | KeyCode::Char('O') => Some(BookmarksKeyAction::OpenPost),
+        KeyCode::Char('a') | KeyCode::Char('A') => Some(BookmarksKeyAction::OpenAll),
         KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete | KeyCode::Backspace => {
             Some(BookmarksKeyAction::Delete)
         }
@@ -187,6 +189,10 @@ mod tests {
         assert_eq!(
             map_bookmarks_action(KeyCode::Down, false),
             Some(BookmarksKeyAction::SelectNext)
+        );
+        assert_eq!(
+            map_bookmarks_action(KeyCode::Char('a'), false),
+            Some(BookmarksKeyAction::OpenAll)
         );
     }
 }
