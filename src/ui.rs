@@ -63,9 +63,9 @@ pub fn pane_title_with_shortcut(
     };
 
     Line::from(vec![
-        Span::raw(format!("{title} (")),
+        Span::raw(format!("{title} [")),
         Span::styled(shortcut.to_string(), shortcut_style),
-        Span::raw(")"),
+        Span::raw("]"),
     ])
 }
 

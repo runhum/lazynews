@@ -302,7 +302,7 @@ impl App {
         let block = Block::bordered()
             .title(pane_title_with_shortcut(
                 "Feeds",
-                '3',
+                '4',
                 self.focus_pane,
                 Pane::Feeds,
             ))
@@ -463,7 +463,7 @@ impl App {
                 Block::bordered()
                     .title(pane_title_with_shortcut(
                         comments_title,
-                        '4',
+                        '3',
                         self.focus_pane,
                         Pane::Comments,
                     ))
@@ -528,12 +528,12 @@ impl App {
                 self.set_focus_pane(Pane::Posts);
             }
             '3' => {
-                self.set_focus_pane(Pane::Feeds);
-            }
-            '4' => {
                 if self.comments_open {
                     self.set_focus_pane(Pane::Comments);
                 }
+            }
+            '4' => {
+                self.set_focus_pane(Pane::Feeds);
             }
             _ => {}
         }
@@ -1673,11 +1673,11 @@ mod tests {
             .expect("pane key should be handled");
         assert_eq!(app.focus_pane, Pane::Posts);
 
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE))
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
             .expect("pane key should be handled");
         assert_eq!(app.focus_pane, Pane::Feeds);
 
-        app.handle_key_event(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE))
             .expect("pane key should be handled");
         assert_eq!(app.focus_pane, Pane::Comments);
     }
